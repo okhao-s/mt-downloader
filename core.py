@@ -504,15 +504,12 @@ def ffmpeg_download(
         out_time_ms = int(stats.get("out_time_ms") or 0)
         total_size = int(stats.get("total_size") or 0)
         speed = (stats.get("speed") or "").strip()
-        bitrate = (stats.get("bitrate") or "").strip()
         pseudo_progress = max(8, min(95, 8 + out_time_ms // 15_000_000))
-        parts = [f"已处理 {out_time_ms / 1000000:.1f}s"]
+        parts = [f"视频进度 {out_time_ms / 1000000:.1f}s"]
         if total_size > 0:
             parts.append(f"已下载 {total_size / 1024 / 1024:.1f}MB")
-        if bitrate and bitrate != "N/A":
-            parts.append(f"码率 {bitrate}")
         if speed and speed != "N/A":
-            parts.append(f"速度 {speed}")
+            parts.append(f"下载速度 {speed}")
         progress_callback(pseudo_progress, "正在下载… " + " · ".join(parts))
 
     try:

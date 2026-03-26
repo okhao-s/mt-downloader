@@ -31,6 +31,8 @@ const state = {
   latestParseData: null,
   autoFilledOutput: '',
   jobsTimer: null,
+  jobClockTimer: null,
+  latestJobsSnapshot: [],
   historyFilter: 'all',
   taskFilter: 'active',
 };
@@ -781,6 +783,35 @@ function renderJobList(container, jobs, { compact = false, emptyText = '还没�
   container.innerHTML = visibleJobs.map(job => buildJobCard(job, { compact })).join('');
 }
 
+function rerenderJobClocks() {
+  if (!state.latestJobsSnapshot?.length) return;
+  const sortedJobs = sortJobsByRecent(state.latestJobsSnapshot);
+  const activeJobs = sortedJobs.filter(job => DOWNLOADING_STATUSES.includes(job.status));
+  const queuedJobs = sortedJobs.filter(job => QUEUED_STATUSES.includes(job.status));
+  const historyJobs = sortedJobs.filter(job => !RUNNING_STATUSES.includes(job.status));
+  const failedJobs = historyJobs.filter(job => job.status === 'failed');
+  const doneJobs = historyJobs.filter(job => job.status === 'done');
+  const cancelledJobs = historyJobs.filter(job => job.status === 'cancelled');
+  const retriedJobs = historyJobs.filter(job => job.status === 'retried');
+  const filteredHistoryJobs = filterHistoryJobs(historyJobs, [...activeJobs, ...queuedJobs]);
+  const taskGroups = { activeJobs, queuedJobs, failedJobs, doneJobs, cancelledJobs, retriedJobs };
+  const taskJobs = getTaskFilterJobs(taskGroups);
+
+  renderJobList(dom.taskJobs, taskJobs, {
+    compact: true,
+    emptyText: taskFilterEmptyText(state.taskFilter),
+    limit: TASK_DISPLAY_LIMIT,
+  });
+  renderJobList(dom.jobs, filteredHistoryJobs, { emptyText: '还没有符合筛选条件的历史任务。', limit: HISTORY_DISPLAY_LIMIT });
+}
+
+function startJobClock() {
+  if (state.jobClockTimer) return;
+  state.jobClockTimer = setInterval(() => {
+    rerenderJobClocks();
+  }, 1000);
+}
+
 function filterHistoryJobs(historyJobs, activeJobs = []) {
   switch (state.historyFilter) {
     case 'active':
@@ -825,7 +856,8 @@ function updateHistorySummary({ activeCount, queuedCount, failedCount, doneCount
 async function refreshJobs({ silent = false } = {}) {
   const res = await fetch('/api/jobs', { cache: 'no-store' });
   const jobs = await res.json();
-  const sortedJobs = sortJobsByRecent(jobs);
+  state.latestJobsSnapshot = Array.isArray(jobs) ? jobs : [];
+  const sortedJobs = sortJobsByRecent(state.latestJobsSnapshot);
   const activeJobs = sortedJobs.filter(job => DOWNLOADING_STATUSES.includes(job.status));
   const queuedJobs = sortedJobs.filter(job => QUEUED_STATUSES.includes(job.status));
   const historyJobs = sortedJobs.filter(job => !RUNNING_STATUSES.includes(job.status));
@@ -934,6 +966,7 @@ window.toggleHistoryPanel = toggleHistoryPanel;
 window.addEventListener('load', async () => {
   initDom();
   bindEvents();
+  startJobClock();
   setTaskFilter(state.taskFilter);
   setHistoryFilter(state.historyFilter);
   try {
