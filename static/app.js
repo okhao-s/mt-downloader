@@ -131,13 +131,15 @@ function renderSummary(items = [], options = {}) {
 }
 
 function showParseSummary(data) {
-  const firstOption = data?.stream_options?.[0] || {};
+  const preferredIndex = getPreferredStreamIndex(data);
+  const preferredOption = preferredIndex !== null ? (data?.stream_options || [])[preferredIndex] || {} : {};
+  const isSingleHighest = isXUrl(data?.source_url) || Number(data?.stream_count || 0) <= 1;
   renderSummary([
-    { label: '当前状态', value: data.stream_count > 1 ? `解析成功，共找到 ${data.stream_count} 个视频` : '解析成功，已找到可下载视频', success: true, highlight: true },
+    { label: '当前状态', value: isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${data.stream_count} 个视频`, success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
     { label: '默认文件名', value: $('output').value.trim() || '未生成' },
-    { label: '首个视频信息', value: streamMetaText(firstOption) },
-    { label: '下一步', value: data.stream_count > 1 ? '点上方视频列表选一个，再预览或下载' : '点上方视频列表预览，然后直接下载' },
+    { label: isSingleHighest ? '当前画质' : '推荐画质', value: streamMetaText(preferredOption) },
+    { label: '下一步', value: isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个，再预览或下载' },
   ], { variant: 'success' });
 }
 
@@ -167,11 +169,24 @@ function showConfigSummary(data) {
   ]);
 }
 
+function updateTwitterCookiesHint(data = {}) {
+  const hint = $('twitter-cookies-hint');
+  if (!hint) return;
+  const path = data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
+  hint.textContent = data?.twitter_cookies_exists
+    ? `已检测到 cookies：${path}。X/Twitter 下载会自动带上。`
+    : `未上传 cookies，X/Twitter 先按游客模式试。建议上传浏览器导出的 cookies.txt。`;
+}
+
 function applyConfigToForm(data = {}) {
   $('cfg_proxy').value = data?.default_proxy || '';
   $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
   $('cfg_auto_retry_delay_seconds').value = Number(data?.auto_retry_delay_seconds ?? 30);
   $('cfg_auto_retry_max_attempts').value = Number(data?.auto_retry_max_attempts ?? 2);
+  if ($('cfg_twitter_cookies_path')) {
+    $('cfg_twitter_cookies_path').value = data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
+  }
+  updateTwitterCookiesHint(data);
 }
 
 async function loadConfig() {
@@ -244,14 +259,69 @@ function formatDuration(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function normalizeResolution(option = {}) {
+  const width = Number(option?.width || 0);
+  const height = Number(option?.height || 0);
+  if (width > 0 && height > 0) {
+    const roundedWidth = Math.round(width / 2) * 2;
+    const roundedHeight = Math.round(height / 2) * 2;
+    return `${roundedWidth}x${roundedHeight}`;
+  }
+  return option?.resolution || '';
+}
+
 function streamMetaText(option) {
   const parts = [];
-  if (option?.resolution) parts.push(option.resolution);
+  const resolution = normalizeResolution(option);
+  if (resolution) parts.push(resolution);
   if (option?.format_note) parts.push(String(option.format_note));
   const duration = formatDuration(option?.duration);
   if (duration) parts.push(duration);
   parts.push(formatBytes(option?.filesize));
   return parts.join(' · ');
+}
+
+function getPreferredStreamIndex(data) {
+  const streams = data?.streams || [];
+  const options = data?.stream_options || [];
+  if (!streams.length) return null;
+
+  let bestIndex = 0;
+  let bestScore = -1;
+  for (let index = 0; index < streams.length; index += 1) {
+    const stream = streams[index];
+    const option = options.find(item => item.url === stream) || {};
+    const width = Number(option?.width || 0);
+    const height = Number(option?.height || 0);
+    const pixels = width * height;
+    const tbr = Number(option?.tbr || 0);
+    const filesize = Number(option?.filesize || option?.filesize_approx || 0);
+    const score = pixels * 1000000 + tbr * 1000 + filesize;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
+}
+
+function isXUrl(url = '') {
+  return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i.test(String(url || ''));
+}
+
+function collapseStreamsForDisplay(data) {
+  if (!data || !isXUrl(data?.source_url)) return data;
+  const preferredIndex = getPreferredStreamIndex(data);
+  if (preferredIndex === null || !data?.streams?.[preferredIndex]) return data;
+  const preferredUrl = data.streams[preferredIndex];
+  const preferredOption = (data.stream_options || []).find(item => item.url === preferredUrl);
+  return {
+    ...data,
+    streams: [preferredUrl],
+    stream_options: preferredOption ? [preferredOption] : [],
+    stream_count: 1,
+    preferred_stream_original_index: preferredIndex,
+  };
 }
 
 function renderStreamList(data) {
@@ -272,7 +342,7 @@ function renderStreamList(data) {
     return `
       <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}">
         <div class="stream-item-title">
-          <span>视频 ${index + 1}</span>
+          <span>${isXUrl(data?.source_url) ? '最高画质' : `视频 ${index + 1}`}</span>
           <span>${active ? '当前选中' : '点击预览'}</span>
         </div>
         <div class="stream-item-meta">${streamMetaText(option)}</div>
@@ -355,13 +425,20 @@ async function loadPreview() {
 }
 
 function applyParseData(data) {
-  state.latestParseData = data;
-  state.selectedStreamIndex = null;
-  state.selectedStreamUrl = null;
-  syncSuggestedFilename(data);
-  renderStreamList(data);
+  const displayData = collapseStreamsForDisplay(data);
+  state.latestParseData = displayData;
+  const preferredIndex = getPreferredStreamIndex(displayData);
+  if (preferredIndex !== null && displayData?.streams?.[preferredIndex]) {
+    state.selectedStreamIndex = preferredIndex;
+    state.selectedStreamUrl = displayData.streams[preferredIndex];
+  } else {
+    state.selectedStreamIndex = null;
+    state.selectedStreamUrl = null;
+  }
+  syncSuggestedFilename(displayData);
+  renderStreamList(displayData);
   resetPlayer();
-  showParseSummary(data);
+  showParseSummary(displayData);
 }
 
 async function parseUrl() {
@@ -376,7 +453,8 @@ async function parseUrl() {
     setStatus('解析中…', 'loading');
     const data = await api('/api/parse', payload);
     applyParseData(data);
-    setStatus(data.stream_count > 1 ? `解析完成 · ${data.stream_count} 个视频，点击列表预览` : '解析完成 · 点击视频预览', 'success');
+    const shownCount = state.latestParseData?.stream_count ?? data.stream_count;
+    setStatus(shownCount > 1 ? `解析完成 · 显示 ${shownCount} 个可用视频` : '解析完成 · 仅显示最高画质', 'success');
   } catch (e) {
     resetPlayer();
     renderStreamList(null);
@@ -409,8 +487,9 @@ async function downloadVideo() {
   try {
     const payload = collect();
     if (!payload.url) throw new Error('链接都没填，下载个锤子。');
+    const isXUrlValue = isXUrl(payload.url);
     if (state.selectedStreamIndex === null || !state.selectedStreamUrl) {
-      throw new Error('先在视频列表里点选一个视频，再下载。');
+      throw new Error('先解析出可用视频，再下载。');
     }
     setStatus('创建下载任务…', 'loading');
     const data = await api('/api/download', payload, 45000);
@@ -436,6 +515,7 @@ async function saveConfig() {
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
       auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),
       auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),
+      twitter_cookies_path: $('cfg_twitter_cookies_path')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
     });
     applyConfigToForm(data);
     showConfigSummary(data);
@@ -443,6 +523,39 @@ async function saveConfig() {
   } catch (e) {
     showError('config', e);
     setStatus(`保存失败：${e.message}`, 'error');
+  }
+}
+
+async function uploadTwitterCookies() {
+  const fileInput = $('twitter_cookies_file');
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    setStatus('先选一个 cookies.txt 文件', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    setStatus('上传 cookies.txt…', 'loading');
+    const res = await fetch('/api/upload/twitter-cookies', {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store'
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.error || `upload failed (${res.status})`);
+    await loadConfig();
+    renderSummary([
+      { label: '当前状态', value: 'Twitter cookies 已上传', success: true, highlight: true },
+      { label: '保存路径', value: data?.path || '/app/data/cookies/twitter.cookies.txt' },
+      { label: '文件大小', value: `${Number(data?.size || 0)} bytes` },
+      { label: '下一步', value: '重新贴 X / Twitter 链接直接下载，它会自动带 cookies。' },
+    ], { variant: 'success' });
+    setStatus('cookies 已上传', 'success');
+  } catch (e) {
+    setStatus(`上传失败：${e.message}`, 'error');
   }
 }
 
@@ -552,12 +665,57 @@ function jobStatusText(job) {
   return job?.status_text || statusMap[job?.status] || '未知状态';
 }
 
+function formatRelativeDuration(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}小时${String(minutes).padStart(2, '0')}分`;
+  if (minutes > 0) return `${minutes}分${String(seconds).padStart(2, '0')}秒`;
+  return `${seconds}秒`;
+}
+
+function parseIsoTime(value) {
+  if (!value) return null;
+  const ts = Date.parse(String(value));
+  return Number.isNaN(ts) ? null : ts;
+}
+
 function formatJobTime(job) {
-  return job?.updated_at || job?.finished_at || job?.started_at || job?.created_at || '';
+  const now = Date.now();
+  const createdAt = parseIsoTime(job?.created_at);
+  const startedAt = parseIsoTime(job?.started_at);
+  const finishedAt = parseIsoTime(job?.finished_at);
+  const updatedAt = parseIsoTime(job?.updated_at);
+
+  if (job?.status === 'downloading' && startedAt) {
+    return `已运行 ${formatRelativeDuration(now - startedAt)}`;
+  }
+  if (job?.status === 'queued' && createdAt) {
+    return `已等待 ${formatRelativeDuration(now - createdAt)}`;
+  }
+  if ((job?.status === 'done' || job?.status === 'failed' || job?.status === 'cancelled') && finishedAt) {
+    const finishedAgo = formatRelativeDuration(now - finishedAt);
+    if (startedAt) {
+      return `${finishedAgo}前 · 耗时 ${formatRelativeDuration(finishedAt - startedAt)}`;
+    }
+    return `${finishedAgo}前`;
+  }
+  if (updatedAt) {
+    return `${formatRelativeDuration(now - updatedAt)}前更新`;
+  }
+  if (createdAt) {
+    return `${formatRelativeDuration(now - createdAt)}前创建`;
+  }
+  return '';
+}
+
+function jobSortTimestamp(job) {
+  return parseIsoTime(job?.updated_at) || parseIsoTime(job?.finished_at) || parseIsoTime(job?.started_at) || parseIsoTime(job?.created_at) || 0;
 }
 
 function sortJobsByRecent(jobs = []) {
-  return [...jobs].sort((a, b) => String(formatJobTime(b)).localeCompare(String(formatJobTime(a))));
+  return [...jobs].sort((a, b) => jobSortTimestamp(b) - jobSortTimestamp(a));
 }
 
 function summarizeSource(job) {
@@ -769,6 +927,7 @@ window.retryJob = retryJob;
 window.deleteJob = deleteJob;
 window.clearHistory = clearHistory;
 window.saveConfig = saveConfig;
+window.uploadTwitterCookies = uploadTwitterCookies;
 window.toggleSettingsPanel = toggleSettingsPanel;
 window.toggleHistoryPanel = toggleHistoryPanel;
 

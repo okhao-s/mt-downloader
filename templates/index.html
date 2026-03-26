@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=20260324e">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=20260325a">
+  <link rel="stylesheet" href="/static/style.css?v=20260326c">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
@@ -154,9 +154,21 @@
             <span>最大自动重试次数</span>
             <input id="cfg_auto_retry_max_attempts" type="number" min="0" value="{{ config.auto_retry_max_attempts if config.auto_retry_max_attempts is not none else 2 }}">
           </label>
+
+          <label class="field field-wide">
+            <span>X / Twitter cookies 路径</span>
+            <input id="cfg_twitter_cookies_path" value="{{ config.twitter_cookies_path or '/app/data/cookies/twitter.cookies.txt' }}" placeholder="/app/data/cookies/twitter.cookies.txt">
+          </label>
+
+          <label class="field field-wide">
+            <span>上传浏览器导出的 cookies.txt</span>
+            <input id="twitter_cookies_file" type="file" accept=".txt,text/plain">
+            <small id="twitter-cookies-hint" class="field-hint">未上传 cookies，X/Twitter 先按游客模式试。</small>
+          </label>
         </div>
-        <div class="action-row single">
+        <div class="action-row">
           <button class="btn btn-secondary" onclick="saveConfig()">保存设置</button>
+          <button class="btn btn-inline" type="button" onclick="uploadTwitterCookies()">上传 cookies.txt</button>
         </div>
       </div>
     </section>
@@ -195,6 +207,6 @@
     </section>
   </div>
 
-  <script src="/static/app.js?v=20260325b"></script>
+  <script src="/static/app.js?v=20260326g"></script>
 </body>
 </html>

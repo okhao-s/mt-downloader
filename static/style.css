@@ -256,6 +256,13 @@ input::placeholder {
   color: rgba(17, 32, 59, 0.38);
 }
 
+.field-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(17, 32, 59, 0.62);
+}
+
 input:focus {
   border-color: rgba(90, 140, 255, 0.7);
   box-shadow: 0 0 0 4px rgba(98, 148, 255, 0.14);

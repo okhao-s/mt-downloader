@@ -30,6 +30,7 @@ def load_config() -> dict:
         "auto_retry_enabled": False,
         "auto_retry_delay_seconds": 30,
         "auto_retry_max_attempts": 2,
+        "twitter_cookies_path": "/app/data/cookies/twitter.cookies.txt",
     }
 
 
@@ -82,6 +83,34 @@ def dedupe_stream_options(items: list[dict]) -> list[dict]:
         seen.add(url)
         result.append(item)
     return result
+
+
+def is_probably_audio_only_format(fmt: dict) -> bool:
+    if not isinstance(fmt, dict):
+        return False
+    width = fmt.get("width")
+    height = fmt.get("height")
+    resolution = str(fmt.get("resolution") or "").lower()
+    vcodec = str(fmt.get("vcodec") or "").lower()
+    acodec = str(fmt.get("acodec") or "").lower()
+    format_note = str(fmt.get("format_note") or "").lower()
+    format_id = str(fmt.get("format_id") or "").lower()
+    ext = str(fmt.get("ext") or "").lower()
+    url = str(fmt.get("url") or "").lower()
+
+    if width or height:
+        return False
+    if vcodec and vcodec not in {"none", "null", "unknown"}:
+        return False
+    if resolution == "audio only":
+        return True
+    if "audio" in format_note or "audio" in format_id:
+        return True
+    if "/mp4a/" in url:
+        return True
+    if acodec and acodec not in {"none", "null", "unknown"} and ext in {"m4a", "mp3", "aac"}:
+        return True
+    return False
 
 
 def extract_title_from_html(html: str) -> Optional[str]:
@@ -196,7 +225,7 @@ def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[
     }
 
 
-def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> dict:
+def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> dict:
     cmd = ["yt-dlp", "-J", "--no-warnings", "--skip-download"]
     if referer:
         cmd += ["--add-header", f"Referer:{referer}"]
@@ -204,11 +233,80 @@ def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent:
         cmd += ["--add-header", f"User-Agent:{user_agent}"]
     if proxy:
         cmd += ["--proxy", proxy]
+    if cookies_path and Path(cookies_path).exists():
+        cmd += ["--cookies", cookies_path]
     cmd.append(url)
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "yt-dlp failed")
     return json.loads(proc.stdout)
+
+
+def download_with_ytdlp(
+    url: str,
+    output_path: Path,
+    referer: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    proxy: Optional[str] = None,
+    cookies_path: Optional[str] = None,
+    progress_callback=None,
+    should_cancel=None,
+):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        "yt-dlp",
+        "--newline",
+        "--progress",
+        "--no-part",
+        "--restrict-filenames",
+        "-o",
+        str(output_path),
+    ]
+    if referer:
+        cmd += ["--add-header", f"Referer:{referer}"]
+    if user_agent:
+        cmd += ["--add-header", f"User-Agent:{user_agent}"]
+    if proxy:
+        cmd += ["--proxy", proxy]
+    if cookies_path and Path(cookies_path).exists():
+        cmd += ["--cookies", cookies_path]
+    cmd.append(url)
+
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    lines = []
+    last_progress = 8
+
+    progress_re = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+
+    try:
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                if should_cancel and should_cancel():
+                    process.terminate()
+                    raise RuntimeError("下载已取消")
+                line = raw_line.rstrip()
+                if line:
+                    lines.append(line)
+                match = progress_re.search(line)
+                if match and progress_callback:
+                    pct = max(8, min(99, int(float(match.group(1)))))
+                    last_progress = pct
+                    progress_callback(pct, f"yt-dlp 下载中… {line}")
+                elif progress_callback and line:
+                    if "Destination:" in line:
+                        progress_callback(max(last_progress, 8), "yt-dlp 已开始拉取视频…")
+                    elif "Merging formats into" in line:
+                        progress_callback(99, "yt-dlp 正在合并音视频…")
+    finally:
+        returncode = process.wait()
+
+    if returncode != 0:
+        detail = "\n".join(lines[-80:]).strip() or f"yt-dlp exited with code {returncode}"
+        raise RuntimeError(detail[-4000:])
+
+    if progress_callback:
+        progress_callback(100, "yt-dlp 下载完成")
 
 
 def build_stream_option(url: str, meta: Optional[dict] = None, source: str = "unknown") -> dict:
@@ -232,6 +330,28 @@ def build_stream_option(url: str, meta: Optional[dict] = None, source: str = "un
     }
 
 
+def choose_best_stream_url(info: dict) -> Optional[str]:
+    streams = info.get("streams") or []
+    options = info.get("stream_options") or []
+    if not streams:
+        return None
+
+    best_stream = streams[0]
+    best_score = -1
+    for stream in streams:
+        option = next((item for item in options if item.get("url") == stream), {})
+        width = int(option.get("width") or 0)
+        height = int(option.get("height") or 0)
+        pixels = width * height
+        tbr = float(option.get("tbr") or 0)
+        filesize = float(option.get("filesize") or option.get("filesize_approx") or 0)
+        score = pixels * 1_000_000 + tbr * 1_000 + filesize
+        if score > best_score:
+            best_score = score
+            best_stream = stream
+    return best_stream
+
+
 def choose_stream_url(info: dict, selected_url: Optional[str] = None, selected_index: Optional[int] = None) -> Optional[str]:
     streams = info.get("streams") or []
     if selected_url:
@@ -242,6 +362,10 @@ def choose_stream_url(info: dict, selected_url: Optional[str] = None, selected_i
             return selected_url
     if selected_index is not None and 0 <= selected_index < len(streams):
         return streams[selected_index]
+
+    source_url = str(info.get("source_url") or "")
+    if "x.com/" in source_url or "twitter.com/" in source_url:
+        return choose_best_stream_url(info)
     return streams[0] if streams else None
 
 
@@ -252,6 +376,7 @@ def discover_stream(
     proxy: Optional[str] = None,
     selected_url: Optional[str] = None,
     selected_index: Optional[int] = None,
+    cookies_path: Optional[str] = None,
 ) -> dict:
     info = {
         "source_url": url,
@@ -287,7 +412,7 @@ def discover_stream(
         info["errors"].append(f"html 探测失败：{exc}")
 
     try:
-        meta = extract_info_with_ytdlp(url, referer, user_agent, proxy)
+        meta = extract_info_with_ytdlp(url, referer, user_agent, proxy, cookies_path)
         info["title"] = meta.get("title") or info.get("title")
         info["thumbnail"] = meta.get("thumbnail")
 
@@ -299,9 +424,12 @@ def discover_stream(
             extra_options.append(build_stream_option(direct, meta, source="yt-dlp-direct"))
         for fmt in meta.get("formats", []) or []:
             fmt_url = fmt.get("url")
-            if isinstance(fmt_url, str) and ".m3u8" in fmt_url:
-                extra_streams.append(fmt_url)
-                extra_options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-format"))
+            if not isinstance(fmt_url, str) or ".m3u8" not in fmt_url:
+                continue
+            if is_probably_audio_only_format(fmt):
+                continue
+            extra_streams.append(fmt_url)
+            extra_options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-format"))
         if extra_streams:
             info["streams"] = dedupe_keep_order(info["streams"] + extra_streams)
             info["stream_options"] = dedupe_stream_options(info["stream_options"] + extra_options)

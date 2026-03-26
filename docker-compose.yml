@@ -1,8 +1,7 @@
 services:
   m3u8-downloader:
     container_name: Mt
-    build: .
-    image: okhao/mt:dev
+    image: okhao/mt:latest
     ports:
       - "9151:8080"
     volumes:

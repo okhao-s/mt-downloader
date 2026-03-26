@@ -5,10 +5,11 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 import requests
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -21,6 +22,7 @@ from core import (
     build_proxies,
     choose_stream_url,
     discover_stream,
+    download_with_ytdlp,
     ffmpeg_download,
     load_config,
     normalize_filename,
@@ -32,9 +34,12 @@ app = FastAPI(title="M3U8 Downloader")
 BASE_DIR = Path(__file__).parent
 DOWNLOAD_DIR = Path("/downloads")
 DATA_DIR = Path("/app/data")
+COOKIES_DIR = DATA_DIR / "cookies"
+TWITTER_COOKIES_PATH = COOKIES_DIR / "twitter.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+COOKIES_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -58,6 +63,7 @@ def update_job(job_id: str, **updates):
     with jobs_lock:
         for job in jobs:
             if job.get("id") == job_id:
+                updates.setdefault("updated_at", iso_now())
                 job.update(updates)
                 return job
     return None
@@ -176,6 +182,7 @@ class ConfigPayload(BaseModel):
     auto_retry_enabled: bool = False
     auto_retry_delay_seconds: int = 30
     auto_retry_max_attempts: int = 2
+    twitter_cookies_path: str | None = str(TWITTER_COOKIES_PATH)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -187,7 +194,9 @@ def home(request: Request):
 
 @app.post("/api/parse")
 def parse_url(payload: ParsePayload):
-    proxy = payload.proxy or load_config().get("default_proxy") or None
+    cfg = load_config()
+    proxy = payload.proxy or cfg.get("default_proxy") or None
+    cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
     info = discover_stream(
         payload.url,
         payload.referer,
@@ -195,13 +204,24 @@ def parse_url(payload: ParsePayload):
         proxy,
         payload.stream_url,
         payload.stream_index,
+        cookies_path,
     )
     if not info.get("resolved_url"):
         detail = "未解析到 m3u8 流"
         if info.get("errors"):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
         raise HTTPException(status_code=404, detail=detail)
-    info["preview_url"] = f"/api/preview.m3u8?url={payload.url}"
+    chosen_stream = choose_stream_url(info, payload.stream_url, payload.stream_index)
+    preview_parts = [f"url={quote(payload.url, safe='')}" ]
+    if chosen_stream:
+        preview_parts.append(f"stream_url={quote(chosen_stream, safe='')}")
+    if payload.referer:
+        preview_parts.append(f"referer={quote(payload.referer, safe='')}")
+    if payload.user_agent:
+        preview_parts.append(f"user_agent={quote(payload.user_agent, safe='')}")
+    if proxy:
+        preview_parts.append(f"proxy={quote(proxy, safe='')}")
+    info["preview_url"] = "/api/preview.m3u8?" + "&".join(preview_parts)
     info["stream_count"] = len(info.get("streams") or [])
     return info
 
@@ -215,6 +235,8 @@ def run_download_job(
     referer: str | None = None,
     user_agent: str | None = None,
     proxy: str | None = None,
+    download_via: str = "hls",
+    source_url: str | None = None,
 ):
     active_slot = min(MAX_CONCURRENT_DOWNLOADS, count_active_jobs() + 1)
     update_job(job_id, status="downloading", started_at=iso_now(), progress=8, status_text=f"正在拉取视频流… 自动模式 · 并发槽 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
@@ -230,7 +252,15 @@ def run_download_job(
         return False
 
     try:
-        if aggressive and stream_url:
+        if download_via == "ytdlp":
+            target_url = source_url or stream_url or preview_url
+            cfg = load_config()
+            cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
+            use_cookies = bool(source_url and ("x.com/" in source_url or "twitter.com/" in source_url) and Path(cookies_path).exists())
+            status_note = "（带 cookies）" if use_cookies else ""
+            update_job(job_id, status="downloading", progress=8, status_text=f"正在调用 yt-dlp{status_note}… 并发槽 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
+            download_with_ytdlp(target_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, cookies_path=cookies_path if use_cookies else None, progress_callback=on_progress, should_cancel=should_cancel)
+        elif aggressive and stream_url:
             try:
                 aggressive_hls_download(stream_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, progress_callback=on_progress, should_cancel=should_cancel)
             except Exception as exc:
@@ -282,6 +312,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             "stream_options": [],
         }
     else:
+        cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
         info = discover_stream(
             payload.url,
             payload.referer,
@@ -289,28 +320,33 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             proxy,
             payload.stream_url,
             payload.stream_index,
+            cookies_path,
         )
     download_dir = get_download_dir()
     stream_url = payload.stream_url or choose_stream_url(info, payload.stream_url, payload.stream_index)
-    if not stream_url:
-        raise HTTPException(status_code=404, detail="未解析到 m3u8 流")
+    extractor = str(info.get("extractor") or "")
+    is_x_url = "x.com/" in (payload.url or "") or "twitter.com/" in (payload.url or "")
+    use_ytdlp_fallback = not stream_url and is_x_url
+    if not stream_url and not use_ytdlp_fallback:
+        raise HTTPException(status_code=404, detail="未解析到可下载视频")
 
     suggested_name = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
     output_name = allocate_output_name(suggested_name, download_dir=download_dir)
     output_path = download_dir / output_name
 
-    preview_params = {"url": payload.url, "stream_url": stream_url}
-    if payload.referer:
-        preview_params["referer"] = payload.referer
-    if payload.user_agent:
-        preview_params["user_agent"] = payload.user_agent
-    if proxy:
-        preview_params["proxy"] = proxy
-    if payload.stream_index is not None:
-        preview_params["stream_index"] = str(payload.stream_index)
-
     preview_url = f"{INTERNAL_BASE_URL}/api/preview.m3u8"
-    resp = requests.Request("GET", preview_url, params=preview_params).prepare()
+    resp_url = preview_url
+    if stream_url:
+        preview_params = {"url": payload.url, "stream_url": stream_url}
+        if payload.referer:
+            preview_params["referer"] = payload.referer
+        if payload.user_agent:
+            preview_params["user_agent"] = payload.user_agent
+        if proxy:
+            preview_params["proxy"] = proxy
+        if payload.stream_index is not None:
+            preview_params["stream_index"] = str(payload.stream_index)
+        resp_url = requests.Request("GET", preview_url, params=preview_params).prepare().url
 
     retry_count = 0
     if retry_of:
@@ -320,6 +356,13 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
 
     queued_ahead = count_queued_jobs()
     active_now = count_active_jobs()
+    download_via = "ytdlp" if use_ytdlp_fallback else "hls"
+    if use_ytdlp_fallback and not payload.output and is_x_url:
+        base_name = info.get("title") or f"x-video-{uuid4().hex[:8]}"
+        output_name = allocate_output_name(base_name, download_dir=download_dir)
+        output_path = download_dir / output_name
+
+    now = iso_now()
     job = {
         "id": uuid4().hex[:10],
         "source_url": payload.url,
@@ -327,7 +370,8 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "stream_index": payload.stream_index,
         "output": output_name,
         "download_dir": str(download_dir),
-        "created_at": iso_now(),
+        "created_at": now,
+        "updated_at": now,
         "started_at": None,
         "finished_at": None,
         "proxy": proxy or "",
@@ -339,6 +383,8 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "retry_count": retry_count,
         "retry_of": retry_of or "",
         "retry_scheduled": False,
+        "download_via": download_via,
+        "extractor": extractor,
         "request_payload": payload.model_dump(),
     }
     add_job(job)
@@ -346,13 +392,15 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     download_executor.submit(
         run_download_job,
         job["id"],
-        resp.url,
+        resp_url,
         output_path,
         True,
         stream_url,
         payload.referer,
         payload.user_agent,
         proxy,
+        download_via,
+        payload.url,
     )
     return job
 
@@ -391,6 +439,7 @@ def download(request: Request, payload: DownloadPayload):
 def download_all(request: Request, payload: BatchDownloadPayload):
     cfg = load_config()
     proxy = payload.proxy or cfg.get("default_proxy") or None
+    cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
     info = discover_stream(
         payload.url,
         payload.referer,
@@ -398,10 +447,29 @@ def download_all(request: Request, payload: BatchDownloadPayload):
         proxy,
         payload.stream_url,
         payload.stream_index,
+        cookies_path,
     )
     streams = info.get("streams") or []
     if not streams:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
+
+    is_x_url = "x.com/" in (payload.url or "") or "twitter.com/" in (payload.url or "")
+    if is_x_url:
+        best_stream = choose_stream_url(info)
+        if not best_stream:
+            raise HTTPException(status_code=404, detail="未解析到可下载视频")
+        best_index = next((i for i, s in enumerate(streams) if s == best_stream), 0)
+        job_payload = DownloadPayload(
+            url=payload.url,
+            output=payload.output or info.get("title") or f"video-{uuid4().hex[:8]}",
+            referer=payload.referer,
+            user_agent=payload.user_agent,
+            proxy=payload.proxy,
+            stream_url=best_stream,
+            stream_index=best_index,
+        )
+        job = create_download_job(job_payload)
+        return {"ok": True, "title": info.get("title") or job_payload.output, "stream_count": 1, "jobs": [job]}
 
     jobs_created = []
     base_title = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
@@ -480,7 +548,8 @@ def preview_m3u8(
     if stream_url:
         selected_stream = stream_url
     else:
-        info = discover_stream(url, referer, user_agent, actual_proxy, stream_url, stream_index)
+        cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
+        info = discover_stream(url, referer, user_agent, actual_proxy, stream_url, stream_index, cookies_path)
         selected_stream = choose_stream_url(info, stream_url, stream_index)
     if not selected_stream:
         raise HTTPException(status_code=404, detail="未解析到 m3u8 流")
@@ -507,7 +576,10 @@ def media_proxy(name: str = "", target: str = "", referer: str | None = None, us
 
 @app.get("/api/config")
 def get_config():
-    return load_config()
+    cfg = load_config()
+    cfg.setdefault("twitter_cookies_path", str(TWITTER_COOKIES_PATH))
+    cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
+    return cfg
 
 
 @app.post("/api/config")
@@ -517,5 +589,30 @@ def set_config(payload: ConfigPayload):
     cfg["auto_retry_enabled"] = bool(payload.auto_retry_enabled)
     cfg["auto_retry_delay_seconds"] = max(1, int(payload.auto_retry_delay_seconds or 30))
     cfg["auto_retry_max_attempts"] = max(0, int(payload.auto_retry_max_attempts or 0))
+    cfg["twitter_cookies_path"] = payload.twitter_cookies_path or str(TWITTER_COOKIES_PATH)
     save_config(cfg)
+    cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
     return cfg
+
+
+@app.post("/api/upload/twitter-cookies")
+async def upload_twitter_cookies(file: UploadFile = File(...)):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="只收浏览器导出的 cookies.txt")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="cookies 文件是空的")
+    TWITTER_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TWITTER_COOKIES_PATH.write_bytes(content)
+
+    cfg = load_config()
+    cfg["twitter_cookies_path"] = str(TWITTER_COOKIES_PATH)
+    save_config(cfg)
+
+    return {
+        "ok": True,
+        "path": str(TWITTER_COOKIES_PATH),
+        "size": len(content),
+        "twitter_cookies_exists": True,
+    }
