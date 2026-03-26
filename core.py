@@ -293,6 +293,7 @@ def extract_x_streams_from_graphql_payload(payload: dict) -> dict:
     legacy = dig_first(payload, lambda x: isinstance(x, dict) and isinstance(x.get('extended_entities'), dict)) or {}
     extended = legacy.get('extended_entities') or {}
     media_list = extended.get('media') or []
+    media_best_options = []
 
     for media in media_list:
         if not isinstance(media, dict):
@@ -300,6 +301,7 @@ def extract_x_streams_from_graphql_payload(payload: dict) -> dict:
         result["thumbnail"] = result["thumbnail"] or media.get('media_url_https') or media.get('media_url')
         video_info = media.get('video_info') or {}
         variants = video_info.get('variants') or []
+        media_options = []
         for variant in variants:
             variant_url = variant.get('url')
             if not isinstance(variant_url, str):
@@ -307,15 +309,42 @@ def extract_x_streams_from_graphql_payload(payload: dict) -> dict:
             if '.m3u8' not in variant_url and '.mp4' not in variant_url:
                 continue
             bitrate = variant.get('bitrate')
+            width = variant.get('width')
+            height = variant.get('height')
+            if (not width or not height) and isinstance(variant_url, str):
+                size_match = re.search(r'/vid/[^/]+/(\d+)x(\d+)/', variant_url)
+                if size_match:
+                    width = int(size_match.group(1))
+                    height = int(size_match.group(2))
             option = build_stream_option(variant_url, {
                 'tbr': (float(bitrate) / 1000.0) if bitrate else None,
+                'width': width,
+                'height': height,
             }, source='x-graphql')
-            result['streams'].append(variant_url)
-            result['stream_options'].append(option)
+            media_options.append(option)
+
+        if not media_options:
+            continue
+
+        media_info = {
+            'streams': [item['url'] for item in media_options],
+            'stream_options': media_options,
+        }
+        best_url = choose_best_stream_url(media_info)
+        best_option = next((item for item in media_options if item.get('url') == best_url), media_options[0])
+        media_best_options.append(best_option)
 
     note_tweet = dig_first(payload, lambda x: isinstance(x, dict) and (x.get('full_text') or x.get('text')))
     if isinstance(note_tweet, dict):
         result['title'] = note_tweet.get('full_text') or note_tweet.get('text')
+
+    if media_best_options:
+        best_overall = next((item for item in media_best_options if item.get('url') == choose_best_stream_url({'streams': [x['url'] for x in media_best_options], 'stream_options': media_best_options})), media_best_options[0])
+        result['streams'] = [best_overall['url']]
+        result['stream_options'] = [best_overall]
+    else:
+        result['streams'] = []
+        result['stream_options'] = []
 
     result['streams'] = dedupe_keep_order(result['streams'])
     result['stream_options'] = dedupe_stream_options(result['stream_options'])
