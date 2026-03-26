@@ -13,6 +13,8 @@ import requests
 
 CONFIG_PATH = Path(os.getenv("APP_CONFIG_PATH", "/app/data/config.json"))
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+X_GQL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+X_TWEET_RESULT_BY_REST_ID_QUERY = "sBoAB5nqJTOyR9sZ5qVLsw"
 
 
 def ensure_parent(path: Path):
@@ -215,6 +217,34 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
     return html
 
 
+def extract_twitter_fallback_streams(html: str) -> list[str]:
+    patterns = [
+        r'https?://video\.twimg\.com/[^"\'\s>]+\.(?:m3u8|mp4)(?:\?[^"\'\s>]*)?',
+        r'https?:\\/\\/video\.twimg\.com\\/.*?\.(?:m3u8|mp4)(?:[^"\'\s>]*)?',
+        r'"playbackUrl"\s*:\s*"(https?:\\/\\/video\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?)"',
+        r'"video_info".*?"variants"\s*:\s*\[(.*?)\]',
+    ]
+    found = []
+    for pat in patterns[:3]:
+        for match in re.findall(pat, html, re.IGNORECASE):
+            candidate = match if isinstance(match, str) else match[0]
+            candidate = candidate.replace('\\/', '/')
+            found.append(candidate)
+
+    variants_blocks = re.findall(patterns[3], html, re.IGNORECASE | re.DOTALL)
+    for block in variants_blocks:
+        for url in re.findall(r'https?:\\/\\/video\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?', block, re.IGNORECASE):
+            found.append(url.replace('\\/', '/'))
+
+    cleaned = []
+    for candidate in found:
+        if not isinstance(candidate, str):
+            continue
+        if 'video.twimg.com/' in candidate or 'video.twimg.com/' in candidate:
+            cleaned.append(candidate.replace('video.twimg.com/', 'video.twimg.com/'))
+    return dedupe_keep_order(cleaned)
+
+
 def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> dict:
     html = fetch_webpage_html(url, referer, user_agent, proxy)
     streams = extract_m3u8_from_html(html)
@@ -223,6 +253,155 @@ def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[
         "stream_options": [{"url": s, "source": "html"} for s in streams],
         "title": extract_title_from_html(html),
     }
+
+
+def parse_netscape_cookies(cookies_path: Optional[str]) -> dict:
+    cookies = {}
+    if not cookies_path:
+        return cookies
+    path = Path(cookies_path)
+    if not path.exists():
+        return cookies
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split('\t')
+        if len(parts) >= 7:
+            cookies[parts[5]] = parts[6]
+    return cookies
+
+
+def dig_first(value, predicate):
+    if predicate(value):
+        return value
+    if isinstance(value, dict):
+        for item in value.values():
+            found = dig_first(item, predicate)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = dig_first(item, predicate)
+            if found is not None:
+                return found
+    return None
+
+
+def extract_x_streams_from_graphql_payload(payload: dict) -> dict:
+    result = {"title": None, "thumbnail": None, "streams": [], "stream_options": []}
+
+    legacy = dig_first(payload, lambda x: isinstance(x, dict) and isinstance(x.get('extended_entities'), dict)) or {}
+    extended = legacy.get('extended_entities') or {}
+    media_list = extended.get('media') or []
+
+    for media in media_list:
+        if not isinstance(media, dict):
+            continue
+        result["thumbnail"] = result["thumbnail"] or media.get('media_url_https') or media.get('media_url')
+        video_info = media.get('video_info') or {}
+        variants = video_info.get('variants') or []
+        for variant in variants:
+            variant_url = variant.get('url')
+            if not isinstance(variant_url, str):
+                continue
+            if '.m3u8' not in variant_url and '.mp4' not in variant_url:
+                continue
+            bitrate = variant.get('bitrate')
+            option = build_stream_option(variant_url, {
+                'tbr': (float(bitrate) / 1000.0) if bitrate else None,
+            }, source='x-graphql')
+            result['streams'].append(variant_url)
+            result['stream_options'].append(option)
+
+    note_tweet = dig_first(payload, lambda x: isinstance(x, dict) and (x.get('full_text') or x.get('text')))
+    if isinstance(note_tweet, dict):
+        result['title'] = note_tweet.get('full_text') or note_tweet.get('text')
+
+    result['streams'] = dedupe_keep_order(result['streams'])
+    result['stream_options'] = dedupe_stream_options(result['stream_options'])
+    return result
+
+
+def fetch_x_graphql_tweet_result(rest_id: str, cookies_path: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> dict:
+    cookies = parse_netscape_cookies(cookies_path)
+    ct0 = cookies.get('ct0')
+    auth_token = cookies.get('auth_token')
+    if not ct0 or not auth_token:
+        raise RuntimeError('缺少 X 登录 cookies（ct0/auth_token）')
+
+    variables = {
+        'tweetId': str(rest_id),
+        'withCommunity': False,
+        'includePromotedContent': False,
+        'withVoice': True,
+    }
+    features = {
+        'responsive_web_graphql_exclude_directive_enabled': True,
+        'verified_phone_label_enabled': False,
+        'creator_subscriptions_tweet_preview_api_enabled': True,
+        'responsive_web_graphql_timeline_navigation_enabled': True,
+        'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
+        'premium_content_api_read_enabled': True,
+        'communities_web_enable_tweet_community_results_fetch': True,
+        'c9s_tweet_anatomy_moderator_badge_enabled': True,
+        'responsive_web_grok_analyze_button_fetch_trends_enabled': False,
+        'responsive_web_grok_analyze_post_followups_enabled': True,
+        'responsive_web_jetfuel_frame': False,
+        'responsive_web_grok_share_attachment_enabled': True,
+        'responsive_web_grok_annotations_enabled': True,
+        'articles_preview_enabled': True,
+        'responsive_web_edit_tweet_api_enabled': True,
+        'graphql_is_translatable_rweb_tweet_is_translatable_enabled': True,
+        'view_counts_everywhere_api_enabled': True,
+        'longform_notetweets_consumption_enabled': True,
+        'responsive_web_twitter_article_tweet_consumption_enabled': True,
+        'tweet_awards_web_tipping_enabled': False,
+        'responsive_web_grok_show_grok_translated_post': False,
+        'responsive_web_grok_analysis_button_from_backend': True,
+        'creator_subscriptions_quote_tweet_preview_enabled': False,
+        'freedom_of_speech_not_reach_fetch_enabled': True,
+        'standardized_nudges_misinfo': True,
+        'tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled': True,
+        'longform_notetweets_rich_text_read_enabled': True,
+        'longform_notetweets_inline_media_enabled': True,
+        'responsive_web_media_download_video_enabled': False,
+        'responsive_web_enhance_cards_enabled': False,
+    }
+    field_toggles = {
+        'withArticleRichContentState': True,
+        'withArticlePlainText': False,
+        'withGrokAnalyze': False,
+        'withDisallowedReplyControls': False,
+    }
+    endpoint = f'https://x.com/i/api/graphql/{X_TWEET_RESULT_BY_REST_ID_QUERY}/TweetResultByRestId'
+    headers = {
+        'authorization': X_GQL_BEARER,
+        'x-csrf-token': ct0,
+        'x-twitter-active-user': 'yes',
+        'x-twitter-auth-type': 'OAuth2Session',
+        'x-twitter-client-language': 'zh-cn',
+        'user-agent': user_agent or DEFAULT_UA,
+        'accept': '*/*',
+        'referer': f'https://x.com/i/status/{rest_id}',
+    }
+    proxies = build_proxies(proxy)
+    response = requests.get(
+        endpoint,
+        params={
+            'variables': json.dumps(variables, separators=(',', ':')),
+            'features': json.dumps(features, separators=(',', ':')),
+            'fieldToggles': json.dumps(field_toggles, separators=(',', ':')),
+        },
+        headers=headers,
+        cookies={
+            'auth_token': auth_token,
+            'ct0': ct0,
+        },
+        proxies=proxies,
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> dict:
@@ -430,6 +609,38 @@ def discover_stream(
                 continue
             extra_streams.append(fmt_url)
             extra_options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-format"))
+
+        is_x_url = "x.com/" in url or "twitter.com/" in url
+        if not extra_streams and is_x_url:
+            try:
+                html = fetch_webpage_html(url, referer, user_agent, proxy)
+                fallback_streams = [s for s in extract_twitter_fallback_streams(html) if ".m3u8" in s or ".mp4" in s]
+                if fallback_streams:
+                    extra_streams.extend(fallback_streams)
+                    extra_options.extend([build_stream_option(s, source="twitter-fallback") for s in fallback_streams])
+                    if not info.get("title"):
+                        info["title"] = extract_title_from_html(html)
+            except Exception as html_exc:
+                info["errors"].append(f"x-html fallback 失败：{html_exc}")
+
+        if not extra_streams and is_x_url:
+            rest_id_match = re.search(r'/status/(\d+)', url)
+            rest_id = rest_id_match.group(1) if rest_id_match else None
+            if rest_id:
+                try:
+                    payload = fetch_x_graphql_tweet_result(rest_id, cookies_path, user_agent, proxy)
+                    gql_info = extract_x_streams_from_graphql_payload(payload)
+                    gql_streams = gql_info.get('streams') or []
+                    gql_options = gql_info.get('stream_options') or []
+                    if gql_streams:
+                        extra_streams.extend(gql_streams)
+                        extra_options.extend(gql_options)
+                        info['title'] = info.get('title') or gql_info.get('title')
+                        info['thumbnail'] = info.get('thumbnail') or gql_info.get('thumbnail')
+                        info['extractor'] = 'x-graphql'
+                except Exception as gql_exc:
+                    info['errors'].append(f"x-graphql fallback 失败：{gql_exc}")
+
         if extra_streams:
             info["streams"] = dedupe_keep_order(info["streams"] + extra_streams)
             info["stream_options"] = dedupe_stream_options(info["stream_options"] + extra_options)

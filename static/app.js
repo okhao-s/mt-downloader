@@ -664,7 +664,31 @@ function jobStatusText(job) {
     cancelled: '已取消',
     retried: '已重试',
   };
-  return job?.status_text || statusMap[job?.status] || '未知状态';
+  return statusMap[job?.status] || '未知状态';
+}
+
+function humanizeJobMeta(job) {
+  const raw = String(job?.status_text || '').trim();
+  if (!raw) return '';
+  return raw
+    .replace(/^正在下载…\s*/g, '')
+    .replace(/^激进模式下载中…\s*/g, '正在并发抓分片 · ')
+    .replace(/^正在调用 yt-dlp（带 cookies）…/g, '正在用登录态抓取视频…')
+    .replace(/^正在调用 yt-dlp…/g, '正在抓取视频源…')
+    .replace(/^正在拉取视频流… 自动模式 · /g, '')
+    .replace(/^自动回退 ffmpeg 直连流…/g, '主方案失败，已切换兼容模式…')
+    .replace(/^任务已创建，排队中… /g, '')
+    .replace(/\b并发槽\s*/g, '下载槽位 ')
+    .replace(/\b并发\s*/g, '并发 ')
+    .replace(/\b分片\s*/g, '已完成分片 ')
+    .replace(/\b视频进度\s*/g, '视频进度 ')
+    .replace(/\b已下载\s*/g, '已下载 ')
+    .replace(/\b速度\s*/g, '下载速度 ')
+    .replace(/\b下载速度\s+/g, '下载速度 ')
+    .replace(/\b已处理\s*/g, '视频进度 ')
+    .replace(/\b码率\s*/g, '下载速度 ')
+    .replace(/当前并行 /g, '当前下载槽位 ')
+    .replace(/，前面还有 /g, '，前面还有 ');
 }
 
 function formatRelativeDuration(ms) {
@@ -741,7 +765,7 @@ function buildJobCard(job, { compact = false } = {}) {
   const status = job?.status || 'queued';
   const progress = Math.max(0, Math.min(100, Number(job.progress ?? 0)));
   const sourceSummary = truncateText(summarizeSource(job), compact ? 52 : 88);
-  const metaText = truncateText(jobStatusText(job), compact ? 92 : 160);
+  const metaText = truncateText(humanizeJobMeta(job), compact ? 92 : 160);
   const retryMeta = Number(job?.retry_count || 0) > 0 ? ` · 第 ${Number(job.retry_count)} 次重试` : '';
   const errorText = job?.error ? truncateText(job.error, compact ? 120 : 240) : '';
   const actionLabel = status === 'downloading' ? '取消' : '删除';
