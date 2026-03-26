@@ -1,0 +1,11 @@
+services:
+  m3u8-downloader:
+    container_name: Mt
+    build: .
+    image: okhao/mt:dev
+    ports:
+      - "9151:8080"
+    volumes:
+      - /root/docker/video:/downloads
+      - ./data:/app/data
+    restart: unless-stopped

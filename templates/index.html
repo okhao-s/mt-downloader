@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>MTHREE</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=20260324e">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="/static/style.css?v=20260325a">
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+  <div class="bg-orb orb-c"></div>
+
+  <main class="shell shell-compact">
+    <section class="workspace-main">
+      <section class="panel glass workbench">
+        <div class="topbar-actions">
+          <div class="topbar-title">MTHREE</div>
+          <div class="topbar-buttons">
+            <button class="btn btn-inline" type="button" onclick="toggleSettingsPanel()">设置</button>
+            <button class="btn btn-inline" type="button" onclick="toggleHistoryPanel()">历史记录</button>
+          </div>
+        </div>
+
+        <div class="split-grid">
+          <section class="pane pane-left">
+            <div class="pane-head">
+              <h2>输入</h2>
+              <div class="status-pill" id="status-pill">等待输入</div>
+            </div>
+
+            <div class="module-grid compact-grid">
+              <label class="field field-wide">
+                <span>视频 / 网页链接</span>
+                <input id="url" placeholder="https://example.com/watch/123">
+              </label>
+
+              <label class="field field-wide">
+                <span>输出文件名</span>
+                <input id="output" placeholder="自动抓标题并输出 .mp4">
+              </label>
+            </div>
+
+            <div class="action-row">
+              <button class="btn btn-secondary" onclick="parseUrl()">解析预览</button>
+              <button class="btn btn-primary" onclick="downloadVideo()">开始下载</button>
+            </div>
+
+            <div id="stream-panel" class="result-card stream-panel hidden">
+              <div class="card-title-row">
+                <h3>视频列表</h3>
+                <span class="mini-tag" id="stream-count-tag">0 streams</span>
+              </div>
+              <div id="stream-list" class="stream-list"></div>
+            </div>
+
+            <div class="result-card result-panel">
+              <div class="card-title-row">
+                <h3>结果</h3>
+              </div>
+              <div id="result" class="summary-card">
+                <div class="summary-empty">等你贴链接。</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="pane pane-right">
+            <div class="pane-head">
+              <h2>预览</h2>
+            </div>
+            <div class="result-card player-card preview-card">
+              <video id="player" controls playsinline preload="metadata"></video>
+            </div>
+            <div class="result-card task-panel">
+              <div class="card-title-row task-panel-head">
+                <div>
+                  <h3>下载任务</h3>
+                  <div class="task-panel-subtitle" id="task-panel-subtitle">按钮切换查看不同状态</div>
+                </div>
+                <span class="mini-tag" id="task-count-tag">0 条</span>
+              </div>
+
+              <div class="task-toolbar task-toolbar-stack">
+                <div class="task-tabs task-tabs-inline" id="task-status-tabs">
+                  <button class="task-tab active" data-task-filter="active" type="button">下载中 <span class="task-tab-count" id="active-count-tag">0</span></button>
+                  <button class="task-tab" data-task-filter="queued" type="button">等待中 <span class="task-tab-count" id="queued-count-tag">0</span></button>
+                  <button class="task-tab" data-task-filter="failed" type="button">失败 <span class="task-tab-count" id="failed-count-tag">0</span></button>
+                  <button class="task-tab" data-task-filter="done" type="button">已完成 <span class="task-tab-count" id="done-count-tag">0</span></button>
+                  <button class="task-tab" data-task-filter="cancelled" type="button">已取消 <span class="task-tab-count" id="cancelled-count-tag">0</span></button>
+                  <button class="task-tab" data-task-filter="retried" type="button">已重试 <span class="task-tab-count" id="retried-count-tag">0</span></button>
+                </div>
+                <div class="task-toolbar-actions">
+                  <button class="btn btn-inline" onclick="toggleHistoryPanel()">打开完整历史</button>
+                  <button class="btn btn-inline" onclick="clearHistory()">清空历史</button>
+                </div>
+              </div>
+
+              <section class="task-section">
+                <div id="task-jobs" class="jobs-list compact-jobs">
+                  <p class="muted">还没有下载任务。</p>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="settings-panel" class="overlay-panel hidden">
+    <div class="overlay-backdrop" onclick="toggleSettingsPanel(false)"></div>
+    <section class="panel glass overlay-card">
+      <div class="pane-head">
+        <h2>设置</h2>
+        <button class="btn btn-inline" type="button" onclick="toggleSettingsPanel(false)">关闭</button>
+      </div>
+      <div id="settings-body" class="settings-body">
+        <div class="module-grid settings-grid">
+          <label class="field">
+            <span>Referer</span>
+            <input id="referer" placeholder="可选">
+          </label>
+
+          <label class="field">
+            <span>User-Agent</span>
+            <input id="user_agent" placeholder="可选">
+          </label>
+
+          <label class="field">
+            <span>代理</span>
+            <input id="proxy" placeholder="http://host:port 或 socks5://host:port">
+          </label>
+
+          <label class="field field-wide">
+            <span>默认代理</span>
+            <input id="cfg_proxy" value="{{ config.default_proxy }}">
+          </label>
+
+          <label class="field">
+            <span>失败后自动重试</span>
+            <input id="cfg_auto_retry_enabled" type="checkbox" {% if config.auto_retry_enabled %}checked{% endif %}>
+          </label>
+
+          <label class="field">
+            <span>重试延迟（秒）</span>
+            <input id="cfg_auto_retry_delay_seconds" type="number" min="1" value="{{ config.auto_retry_delay_seconds or 30 }}">
+          </label>
+
+          <label class="field field-wide">
+            <span>最大自动重试次数</span>
+            <input id="cfg_auto_retry_max_attempts" type="number" min="0" value="{{ config.auto_retry_max_attempts if config.auto_retry_max_attempts is not none else 2 }}">
+          </label>
+        </div>
+        <div class="action-row single">
+          <button class="btn btn-secondary" onclick="saveConfig()">保存设置</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="history-panel" class="overlay-panel hidden">
+    <div class="overlay-backdrop" onclick="toggleHistoryPanel(false)"></div>
+    <section class="panel glass overlay-card overlay-card-history">
+      <div class="pane-head">
+        <div>
+          <h2>历史任务</h2>
+          <div class="history-head-meta" id="history-summary">默认显示最近任务</div>
+        </div>
+        <button class="btn btn-inline" type="button" onclick="toggleHistoryPanel(false)">关闭</button>
+      </div>
+      <div class="task-tabs" id="history-tabs">
+        <button class="task-tab active" data-filter="all" type="button">全部</button>
+        <button class="task-tab" data-filter="active" type="button">活跃</button>
+        <button class="task-tab" data-filter="failed" type="button">失败</button>
+        <button class="task-tab" data-filter="done" type="button">已完成</button>
+        <button class="task-tab" data-filter="cancelled" type="button">已取消</button>
+      </div>
+      <div id="jobs" class="jobs-list history-jobs-list">
+        {% for job in jobs %}
+          <div class="job">
+            <div class="job-top">
+              <strong>{{ job.output }}</strong>
+              <span>{{ job.created_at }}</span>
+            </div>
+            <small>{{ job.source_url }}</small>
+          </div>
+        {% else %}
+          <p class="muted">还没有下载记录。</p>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js?v=20260325b"></script>
+</body>
+</html>
