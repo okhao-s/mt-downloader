@@ -24,6 +24,7 @@ from core import (
     discover_stream,
     download_with_ytdlp,
     ffmpeg_download,
+    is_m3u8_url,
     load_config,
     normalize_filename,
     rewrite_m3u8_manifest,
@@ -226,6 +227,43 @@ def parse_url(payload: ParsePayload):
     return info
 
 
+def direct_download(
+    target_url: str,
+    output_path: Path,
+    referer: str | None = None,
+    user_agent: str | None = None,
+    proxy: str | None = None,
+    progress_callback=None,
+    should_cancel=None,
+):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    headers = build_headers(referer, user_agent)
+    proxies = build_proxies(proxy)
+    with requests.get(target_url, headers=headers, proxies=proxies, timeout=60, stream=True) as resp:
+        resp.raise_for_status()
+        total = int(resp.headers.get('content-length') or 0)
+        downloaded = 0
+        with open(output_path, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 256):
+                if should_cancel and should_cancel():
+                    raise RuntimeError('下载已取消')
+                if not chunk:
+                    continue
+                f.write(chunk)
+                downloaded += len(chunk)
+                if progress_callback:
+                    percent = int(downloaded * 100 / total) if total > 0 else min(99, max(8, downloaded // (1024 * 1024)))
+                    percent = max(8, min(99, percent))
+                    mb = downloaded / 1024 / 1024
+                    total_mb = total / 1024 / 1024 if total > 0 else None
+                    status = f"已下载 {mb:.1f}MB"
+                    if total_mb:
+                        status += f" / {total_mb:.1f}MB"
+                    progress_callback(percent, status)
+    if progress_callback:
+        progress_callback(100, '下载完成')
+
+
 def run_download_job(
     job_id: str,
     preview_url: str,
@@ -260,6 +298,9 @@ def run_download_job(
             status_note = "（带 cookies）" if use_cookies else ""
             update_job(job_id, status="downloading", progress=8, status_text=f"正在调用 yt-dlp{status_note}… 并发槽 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
             download_with_ytdlp(target_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, cookies_path=cookies_path if use_cookies else None, progress_callback=on_progress, should_cancel=should_cancel)
+        elif download_via == "direct":
+            update_job(job_id, status="downloading", progress=8, status_text=f"正在直连下载视频… 并发槽 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
+            direct_download(stream_url or preview_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, progress_callback=on_progress, should_cancel=should_cancel)
         elif aggressive and stream_url:
             try:
                 aggressive_hls_download(stream_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, progress_callback=on_progress, should_cancel=should_cancel)
@@ -301,12 +342,13 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     cfg = load_config()
     proxy = payload.proxy or cfg.get("default_proxy") or None
     if payload.stream_url:
+        selected_is_m3u8 = is_m3u8_url(payload.stream_url)
         info = {
             "source_url": payload.url,
             "resolved_url": payload.stream_url,
             "title": None,
             "thumbnail": None,
-            "is_m3u8": True,
+            "is_m3u8": selected_is_m3u8,
             "extractor": "selected-stream",
             "streams": [payload.stream_url],
             "stream_options": [],
@@ -356,7 +398,12 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
 
     queued_ahead = count_queued_jobs()
     active_now = count_active_jobs()
-    download_via = "ytdlp" if use_ytdlp_fallback else "hls"
+    if use_ytdlp_fallback:
+        download_via = "ytdlp"
+    elif stream_url and not is_m3u8_url(stream_url):
+        download_via = "direct"
+    else:
+        download_via = "hls"
     if use_ytdlp_fallback and not payload.output and is_x_url:
         base_name = info.get("title") or f"x-video-{uuid4().hex[:8]}"
         output_name = allocate_output_name(base_name, download_dir=download_dir)
