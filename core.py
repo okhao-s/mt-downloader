@@ -451,7 +451,7 @@ def fetch_x_graphql_tweet_result(rest_id: str, cookies_path: Optional[str] = Non
 
 
 def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> dict:
-    cmd = ["yt-dlp", "-J", "--no-warnings", "--skip-download"]
+    cmd = ["yt-dlp", "--ignore-config", "-J", "--no-warnings", "--skip-download"]
     if referer:
         cmd += ["--add-header", f"Referer:{referer}"]
     if user_agent:
@@ -486,6 +486,7 @@ def download_with_ytdlp(
 
     cmd = [
         "yt-dlp",
+        "--ignore-config",
         "--newline",
         "--progress",
         "--no-part",
