@@ -135,7 +135,7 @@ function renderSummary(items = [], options = {}) {
 function showParseSummary(data) {
   const preferredIndex = getPreferredStreamIndex(data);
   const preferredOption = preferredIndex !== null ? (data?.stream_options || [])[preferredIndex] || {} : {};
-  const isSingleHighest = isXUrl(data?.source_url) || Number(data?.stream_count || 0) <= 1;
+  const isSingleHighest = shouldCollapseToBestOnly(data?.source_url) || Number(data?.stream_count || 0) <= 1;
   renderSummary([
     { label: '当前状态', value: isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${data.stream_count} 个视频`, success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
@@ -324,8 +324,16 @@ function isXUrl(url = '') {
   return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i.test(String(url || ''));
 }
 
+function isYouTubeUrl(url = '') {
+  return /https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(String(url || ''));
+}
+
+function shouldCollapseToBestOnly(url = '') {
+  return isXUrl(url) || isYouTubeUrl(url);
+}
+
 function collapseStreamsForDisplay(data) {
-  if (!data || !isXUrl(data?.source_url)) return data;
+  if (!data || !shouldCollapseToBestOnly(data?.source_url)) return data;
   const preferredIndex = getPreferredStreamIndex(data);
   if (preferredIndex === null || !data?.streams?.[preferredIndex]) return data;
   const preferredUrl = data.streams[preferredIndex];
@@ -357,7 +365,7 @@ function renderStreamList(data) {
     return `
       <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}">
         <div class="stream-item-title">
-          <span>${isXUrl(data?.source_url) ? '最高画质' : `视频 ${index + 1}`}</span>
+          <span>${shouldCollapseToBestOnly(data?.source_url) ? '最高画质' : `视频 ${index + 1}`}</span>
           <span>${active ? '当前选中' : '点击预览'}</span>
         </div>
         <div class="stream-item-meta">${streamMetaText(option)}</div>
