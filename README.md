@@ -1,80 +1,73 @@
 # mt-downloader
 
-<div align="center">
-
-![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-Web_UI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)
-![FFmpeg](https://img.shields.io/badge/FFmpeg-HLS%20Download-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)
-![yt-dlp](https://img.shields.io/badge/yt--dlp-X%2FTwitter-FFCC00?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-black?style=for-the-badge)
-
-**A practical web downloader for m3u8 / HLS pages and X(Twitter) videos**
-
-支持网页解析、HLS 预览、下载队列、失败重试、历史记录、X/Twitter cookies 上传与最高画质下载。
-
-</div>
+轻量、实用、能落地的视频下载面板。  
+专注把 **m3u8 / HLS、X(Twitter)、YouTube** 这三类常见场景稳定做好，不把项目做成什么都想支持、最后什么都半残的“万能下载器”。
 
 ---
 
-## What it does
+## 特性
 
-`mt-downloader` 是一个偏实用主义的 Web 下载面板，目标不是做花哨媒体中心，而是把这些事干明白：
+- 支持 **m3u8 / HLS** 页面解析、预览、下载
+- 支持 **X / Twitter** 视频解析与下载
+- 支持 **YouTube** 轻量下载
+- 支持 **cookies 上传**（X / YouTube 分开管理）
+- 支持 **任务队列、重试、历史记录**
+- 支持 **中文简洁下载进度**
+- 下载结果按类型自动分目录：
+  - `/downloads/m3u8`
+  - `/downloads/x`
+  - `/downloads/youtube`
 
-- 输入网页地址，尽量解析出真实 m3u8 / HLS 流
+---
+
+## 支持范围
+
+### m3u8 / HLS
+
+- 输入网页地址或直接输入 `.m3u8`
+- 自动尝试提取真实视频流
 - 支持页面内预览 HLS
-- 支持下载队列、失败重试、历史记录
-- 对 **X / Twitter** 链接走专门逻辑：
-  - 支持 `yt-dlp` 解析
-  - 支持上传浏览器导出的 `cookies.txt`
-  - 自动过滤纯音频假流
-  - 默认只使用 **最高画质**
-
-> ⚠️ This project is intended only for content you are authorized to access.
-> It does **not** bypass DRM such as Widevine / FairPlay / PlayReady.
-
----
-
-## Current feature set
-
-### HLS / m3u8
-
-- 输入普通网页地址或直接输入 `.m3u8`
-- 解析后页面内预览 HLS
 - 支持 Referer / User-Agent / Proxy
-- 支持直接下载 HLS 视频
+- 支持 ffmpeg 下载
 
 ### X / Twitter
 
-- 支持 `x.com` / `twitter.com` 视频链接解析
-- 集成 `yt-dlp`
+- 支持 `x.com` / `twitter.com`
+- 默认只显示 **最高画质**
+- 下载时也默认按 **最高画质** 走
+- 对特殊样本支持后端 fallback：
+  - HTML fallback
+  - 登录态 GraphQL fallback
+- `.mp4` 直链自动走直连下载，不误走 HLS
 - 支持上传浏览器导出的 `cookies.txt`
-- 自动带 cookies 参与解析 / 下载
-- 自动过滤纯音频 HLS 变体
-- 页面只显示 **最高画质**
-- 下载时默认也走 **最高画质**，不是只在 UI 上看起来像最高
 
-### Task system
+### YouTube
 
-- 下载中 / 等待中 / 失败 / 已完成 / 已取消 / 已重试 分类展示
-- 支持自动重试与手动重试
-- 支持历史任务清理
-- 任务时间会显示为：
-  - `已运行 xx`
-  - `已等待 xx`
-  - `xx前 · 耗时 xx`
+- 通过 `yt-dlp` 旁路支持
+- 默认只显示 **最高画质**
+- 下载统一强制输出 **MP4**
+- 支持独立的 YouTube `cookies.txt`
+- 不污染原有 `m3u8 / ffmpeg` 主链
 
 ---
 
-## Quick Start
+## 设计思路
 
-### 1. Prepare download directory
+这个项目现在是三条链路分开处理，不是乱炖：
 
-```bash
-mkdir -p /root/docker/video
-```
+- **m3u8 / HLS** → 原主链
+- **X / Twitter** → X 专用旁路 / fallback
+- **YouTube** → `yt-dlp` 专线
 
-### 2. Run with Docker Compose
+这么做就一个原因：
+
+> 别为了多支持一个站，把原来稳定链路一起搞炸。
+
+---
+
+## 快速开始
+
+### Docker Compose
 
 ```bash
 cd /root/docker/mt-downloader
@@ -82,20 +75,13 @@ docker compose pull
 docker compose up -d
 ```
 
-默认端口映射：
-
-- Host: `9151`
-- Container: `8080`
-
-打开：
+默认访问：
 
 ```text
 http://<your-server-ip>:9151
 ```
 
----
-
-## Docker Compose example
+### 推荐的 `docker-compose.yml`
 
 ```yaml
 services:
@@ -110,35 +96,13 @@ services:
     restart: unless-stopped
 ```
 
-如果你要从源码本地构建开发版：
-
-```yaml
-services:
-  m3u8-downloader:
-    container_name: Mt
-    build: .
-    image: okhao/mt:dev
-    ports:
-      - "9151:8080"
-    volumes:
-      - /root/docker/video:/downloads
-      - ./data:/app/data
-    restart: unless-stopped
-```
-
 ---
 
-## Docker image
-
-推荐直接拉：
+## 直接运行 Docker 镜像
 
 ```bash
 docker pull okhao/mt:latest
-```
 
-运行：
-
-```bash
 docker run -d \
   --name Mt \
   -p 9151:8080 \
@@ -149,84 +113,175 @@ docker run -d \
 
 ---
 
-## X / Twitter cookies usage
+## 下载目录
 
-某些 X / Twitter 视频游客模式下可能拿不到正确视频流，这时建议上传浏览器导出的 `cookies.txt`。
-
-### In UI
-
-1. 打开设置面板
-2. 找到 **上传浏览器导出的 cookies.txt**
-3. 选择文件并上传
-4. 重新解析 X / Twitter 链接
-
-### Saved location
-
-容器内默认保存到：
+容器内会自动按类型分目录：
 
 ```text
-/app/data/cookies/twitter.cookies.txt
+/downloads/m3u8
+/downloads/x
+/downloads/youtube
 ```
 
-对应宿主机通常是：
+如果宿主机挂载的是：
 
 ```text
-/root/docker/mt-downloader/data/cookies/twitter.cookies.txt
+/root/docker/video:/downloads
+```
+
+那实际文件会保存到：
+
+```text
+/root/docker/video/m3u8
+/root/docker/video/x
+/root/docker/video/youtube
 ```
 
 ---
 
-## Configuration
+## 下载进度
 
-配置文件默认保存在：
+页面显示的是中文简洁版进度，不再直接甩原始工具输出。
+
+典型状态：
+
+- `排队中 · 当前下载槽位 1/3`
+- `开始下载 · 当前下载槽位 1/3`
+- `开始抓取视频 · 当前下载槽位 1/3`
+- `已下载 37.2% · 总大小 229.20MiB · 速度 2.24MiB/s · 剩余 00:30`
+- `正在合并并转成 MP4`
+- `下载完成`
+
+---
+
+## Cookies
+
+某些 X / YouTube 视频在游客态下拿不到可下载流，这时需要 cookies。
+
+### 默认保存位置
+
+```text
+/app/data/cookies/twitter.cookies.txt
+/app/data/cookies/youtube.cookies.txt
+```
+
+### 宿主机常见路径
+
+```text
+/root/docker/mt-downloader/data/cookies/twitter.cookies.txt
+/root/docker/mt-downloader/data/cookies/youtube.cookies.txt
+```
+
+### 分流规则
+
+- X / Twitter → 使用 `twitter.cookies.txt`
+- YouTube → 使用 `youtube.cookies.txt`
+
+不会混着乱用。
+
+---
+
+## 配置文件
+
+默认配置文件：
 
 ```text
 /app/data/config.json
 ```
 
-常见映射：
+宿主机常见映射：
 
 ```text
 /root/docker/mt-downloader/data/config.json
 ```
 
-当前主要配置项：
+常见配置项：
 
 - `default_proxy`
 - `auto_retry_enabled`
 - `auto_retry_delay_seconds`
 - `auto_retry_max_attempts`
 - `twitter_cookies_path`
+- `youtube_cookies_path`
 
 ---
 
-## Download output
+## 本地开发注意事项
 
-下载的视频默认保存到：
+这里有个非常容易踩的坑：
 
-```text
-/root/docker/video
+**当前 `docker-compose.yml` 使用的是 `image: okhao/mt:latest`，不是 `build:`。**
+
+所以你改完本地源码后，如果只跑：
+
+```bash
+docker compose up -d
 ```
 
----
+**代码不会自动生效。**
 
-## Notes / behavior details
+本地开发正确姿势：
 
-- **不支持 DRM** 视频
-- 某些站点需要 Referer / User-Agent / Proxy 配合
-- X / Twitter 当前策略是：
-  - 解析时识别多档视频流
-  - 页面只展示最高画质
-  - 下载时也默认使用最高画质
-- 如果页面能解析但下载结果异常，优先检查：
-  - cookies 是否有效
-  - 目标视频是否对当前账号可见
-  - 代理链路是否稳定
-  - 浏览器是否还缓存着旧前端资源（可强刷 `Ctrl+F5`）
+```bash
+cd /root/docker/mt-downloader
+docker build -t okhao/mt:latest .
+docker compose up -d --force-recreate
+```
+
+很多“我都改了为什么没变化”，本质上就是这里翻车。
 
 ---
 
-## Project structure
+## 任务系统
+
+支持：
+
+- 排队中
+- 下载中
+- 已完成
+- 失败
+- 已取消
+- 手动重试 / 自动重试
+- 历史记录清理
+
+页面会尽量把底层状态翻译成人话，不把内部日志直接糊到 UI 上。
+
+---
+
+## 项目边界
+
+### 适合
+
+- 自己部署一个轻量下载面板
+- 处理常见的 m3u8 视频页
+- 下载 X / Twitter 视频
+- 轻量支持 YouTube
+
+### 不打算做
+
+- 通用全站解析器
+- DRM 绕过工具
+- 什么站都支持的万能下载器
+- 花里胡哨的媒体中心
+
+---
+
+## 已知说明
+
+- **不支持 DRM**（Widevine / FairPlay / PlayReady 之类别想了）
+- 某些站点必须带 Referer / User-Agent / Proxy 才能解析
+- 某些 X / YouTube 视频必须依赖 cookies
+- 如果前端改完后页面看起来没更新，先试：
+
+```text
+Ctrl + F5
+```
+
+或者直接开无痕窗口。很多“没生效”其实只是浏览器缓存发病。
+
+---
+
+## 目录结构
 
 ```text
 .
@@ -243,14 +298,24 @@ docker run -d \
 
 ---
 
-## Security
+## 安全建议
 
-- 不要把这个面板直接裸露到公网
-- 建议放在内网、VPN、Tailscale 或反向代理鉴权后面
-- 不要把 cookies、token、私钥、`.env` 等敏感内容提交到仓库
+别裸奔到公网。
+
+建议至少满足下面一条：
+
+- 放内网
+- 挂到 VPN / Tailscale 后面
+- 走反向代理并加鉴权
+
+另外：
+
+- 不要把 cookies 提交到仓库
+- 不要把 token、私钥、`.env` 等敏感信息外泄
+- 有代理配置时，注意别把敏感流量乱转发
 
 ---
 
 ## License
 
-Released under the [MIT License](LICENSE).
+MIT
