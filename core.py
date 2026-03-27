@@ -21,26 +21,41 @@ def ensure_parent(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def normalize_cookie_config(cfg: dict | None) -> dict:
+    cfg = dict(cfg or {})
+    xck = cfg.get("xck") or cfg.get("twitter_cookies_path") or "/app/data/cookies/twitter.cookies.txt"
+    youtubeck = cfg.get("youtubeck") or cfg.get("youtube_cookies_path") or "/app/data/cookies/youtube.cookies.txt"
+    bilibilick = cfg.get("bilibilick") or cfg.get("bilibili_cookies_path") or "/app/data/cookies/bilibili.cookies.txt"
+    cfg["xck"] = xck
+    cfg["youtubeck"] = youtubeck
+    cfg["bilibilick"] = bilibilick
+    cfg["twitter_cookies_path"] = xck
+    cfg["youtube_cookies_path"] = youtubeck
+    cfg["bilibili_cookies_path"] = bilibilick
+    return cfg
+
+
 def load_config() -> dict:
     if CONFIG_PATH.exists():
         try:
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            return normalize_cookie_config(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
         except Exception:
             pass
-    return {
+    return normalize_cookie_config({
         "default_proxy": "",
         "auto_retry_enabled": False,
         "auto_retry_delay_seconds": 30,
         "auto_retry_max_attempts": 2,
-        "twitter_cookies_path": "/app/data/cookies/twitter.cookies.txt",
-        "youtube_cookies_path": "/app/data/cookies/youtube.cookies.txt",
-        "bilibili_cookies_path": "/app/data/cookies/bilibili.cookies.txt",
-    }
+        "xck": "/app/data/cookies/twitter.cookies.txt",
+        "youtubeck": "/app/data/cookies/youtube.cookies.txt",
+        "bilibilick": "/app/data/cookies/bilibili.cookies.txt",
+    })
 
 
 def save_config(cfg: dict):
     ensure_parent(CONFIG_PATH)
-    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized = normalize_cookie_config(cfg)
+    CONFIG_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def build_headers(referer: Optional[str] = None, user_agent: Optional[str] = None) -> dict:
@@ -633,6 +648,29 @@ def extract_youtube_streams(meta: dict) -> tuple[list[str], list[dict]]:
     return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
+def extract_bilibili_streams(meta: dict) -> tuple[list[str], list[dict]]:
+    streams = []
+    options = []
+    for fmt in meta.get('formats', []) or []:
+        fmt_url = fmt.get('url')
+        if not isinstance(fmt_url, str):
+            continue
+        vcodec = str(fmt.get('vcodec') or 'none')
+        if vcodec == 'none':
+            continue
+        width = fmt.get('width')
+        height = fmt.get('height')
+        ext = str(fmt.get('ext') or '')
+        protocol = str(fmt.get('protocol') or '')
+        if not width and not height and '.m3u8' not in fmt_url:
+            continue
+        if ext not in {'mp4', 'flv', 'm4v', 'webm'} and '.m3u8' not in fmt_url and protocol not in {'https', 'http', 'm3u8_native', 'm3u8'}:
+            continue
+        streams.append(fmt_url)
+        options.append(build_stream_option(fmt_url, fmt, source='yt-dlp-bilibili'))
+    return dedupe_keep_order(streams), dedupe_stream_options(options)
+
+
 def discover_stream(
     url: str,
     referer: Optional[str] = None,
@@ -683,12 +721,18 @@ def discover_stream(
         extra_streams = []
         extra_options = []
         is_youtube = "youtube.com/" in url or "youtu.be/" in url
+        is_bilibili = "bilibili.com/" in url or "b23.tv/" in url
         direct = meta.get("url")
         if is_youtube:
             extra_streams, extra_options = extract_youtube_streams(meta)
             if isinstance(direct, str) and direct and direct not in extra_streams and ('.googlevideo.com/' in direct or '.m3u8' in direct):
                 extra_streams.append(direct)
                 extra_options.append(build_stream_option(direct, meta, source="yt-dlp-youtube-direct"))
+        elif is_bilibili:
+            extra_streams, extra_options = extract_bilibili_streams(meta)
+            if isinstance(direct, str) and direct and direct not in extra_streams:
+                extra_streams.append(direct)
+                extra_options.append(build_stream_option(direct, meta, source="yt-dlp-bilibili-direct"))
         else:
             if isinstance(direct, str) and ".m3u8" in direct:
                 extra_streams.append(direct)

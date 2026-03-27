@@ -174,7 +174,7 @@ function showConfigSummary(data) {
 function updateTwitterCookiesHint(data = {}) {
   const hint = $('twitter-cookies-hint');
   if (!hint) return;
-  const path = data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
+  const path = data?.xck || data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
   hint.textContent = data?.twitter_cookies_exists
     ? `已检测到 cookies：${path}。X/Twitter 下载会自动带上。`
     : `未上传 cookies，X/Twitter 先按游客模式试。建议上传浏览器导出的 cookies.txt。`;
@@ -183,7 +183,7 @@ function updateTwitterCookiesHint(data = {}) {
 function updateYouTubeCookiesHint(data = {}) {
   const hint = $('youtube-cookies-hint');
   if (!hint) return;
-  const path = data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
+  const path = data?.youtubeck || data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
   hint.textContent = data?.youtube_cookies_exists
     ? `已检测到 cookies：${path}。YouTube 下载会自动带上。`
     : `未上传 cookies，YouTube 先按公开视频模式试。遇到年龄限制/私密限制再补 cookies。`;
@@ -192,7 +192,7 @@ function updateYouTubeCookiesHint(data = {}) {
 function updateBilibiliCookiesHint(data = {}) {
   const hint = $('bilibili-cookies-hint');
   if (!hint) return;
-  const path = data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
+  const path = data?.bilibilick || data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
   hint.textContent = data?.bilibili_cookies_exists
     ? `已检测到 cookies：${path}。Bilibili 解析和下载会自动带上。`
     : `未上传 cookies，Bilibili 可能触发 412 或拿不到视频流。建议上传浏览器导出的 cookies.txt。`;
@@ -203,14 +203,14 @@ function applyConfigToForm(data = {}) {
   $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
   $('cfg_auto_retry_delay_seconds').value = Number(data?.auto_retry_delay_seconds ?? 30);
   $('cfg_auto_retry_max_attempts').value = Number(data?.auto_retry_max_attempts ?? 2);
-  if ($('cfg_twitter_cookies_path')) {
-    $('cfg_twitter_cookies_path').value = data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
+  if ($('cfg_xck')) {
+    $('cfg_xck').value = data?.xck || data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
   }
-  if ($('cfg_youtube_cookies_path')) {
-    $('cfg_youtube_cookies_path').value = data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
+  if ($('cfg_youtubeck')) {
+    $('cfg_youtubeck').value = data?.youtubeck || data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
   }
-  if ($('cfg_bilibili_cookies_path')) {
-    $('cfg_bilibili_cookies_path').value = data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
+  if ($('cfg_bilibilick')) {
+    $('cfg_bilibilick').value = data?.bilibilick || data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
   }
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
@@ -555,9 +555,9 @@ async function saveConfig() {
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
       auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),
       auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),
-      twitter_cookies_path: $('cfg_twitter_cookies_path')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
-      youtube_cookies_path: $('cfg_youtube_cookies_path')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
-      bilibili_cookies_path: $('cfg_bilibili_cookies_path')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
+      xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
+      youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
+      bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
     });
     applyConfigToForm(data);
     showConfigSummary(data);

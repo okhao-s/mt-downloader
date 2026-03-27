@@ -199,9 +199,12 @@ class ConfigPayload(BaseModel):
     auto_retry_enabled: bool = False
     auto_retry_delay_seconds: int = 30
     auto_retry_max_attempts: int = 2
-    twitter_cookies_path: str | None = str(TWITTER_COOKIES_PATH)
-    youtube_cookies_path: str | None = str(YOUTUBE_COOKIES_PATH)
-    bilibili_cookies_path: str | None = str(BILIBILI_COOKIES_PATH)
+    xck: str | None = str(TWITTER_COOKIES_PATH)
+    youtubeck: str | None = str(YOUTUBE_COOKIES_PATH)
+    bilibilick: str | None = str(BILIBILI_COOKIES_PATH)
+    twitter_cookies_path: str | None = None
+    youtube_cookies_path: str | None = None
+    bilibili_cookies_path: str | None = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -228,12 +231,12 @@ def is_bilibili_url(url: str | None) -> bool:
 
 def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
     if is_x_url(url):
-        return cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
+        return cfg.get('xck') or cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
     if is_youtube_url(url):
-        return cfg.get('youtube_cookies_path') or str(YOUTUBE_COOKIES_PATH)
+        return cfg.get('youtubeck') or cfg.get('youtube_cookies_path') or str(YOUTUBE_COOKIES_PATH)
     if is_bilibili_url(url):
-        return cfg.get('bilibili_cookies_path') or str(BILIBILI_COOKIES_PATH)
-    return cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
+        return cfg.get('bilibilick') or cfg.get('bilibili_cookies_path') or str(BILIBILI_COOKIES_PATH)
+    return cfg.get('xck') or cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
 
 
 @app.post("/api/parse")
@@ -251,7 +254,7 @@ def parse_url(payload: ParsePayload):
         cookies_path,
     )
     if not info.get("resolved_url"):
-        detail = "未解析到 m3u8 流"
+        detail = "未解析到可下载视频"
         if info.get("errors"):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
         raise HTTPException(status_code=404, detail=detail)
@@ -337,7 +340,7 @@ def run_download_job(
             target_url = source_url or stream_url or preview_url
             cfg = load_config()
             cookies_path = resolve_site_cookies_path(source_url or target_url, cfg)
-            use_cookies = bool(cookies_path and Path(cookies_path).exists() and (is_x_url(source_url or target_url) or is_youtube_url(source_url or target_url)))
+            use_cookies = bool(cookies_path and Path(cookies_path).exists() and (is_x_url(source_url or target_url) or is_youtube_url(source_url or target_url) or is_bilibili_url(source_url or target_url)))
             status_note = "（带 cookies）" if use_cookies else ""
             force_mp4 = is_youtube_url(source_url or target_url)
             update_job(job_id, status="downloading", progress=8, status_text=f"开始抓取视频{status_note} · 当前下载槽位 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
@@ -641,7 +644,7 @@ def preview_m3u8(
     if stream_url:
         selected_stream = stream_url
     else:
-        cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
+        cookies_path = resolve_site_cookies_path(url, cfg)
         info = discover_stream(url, referer, user_agent, actual_proxy, stream_url, stream_index, cookies_path)
         selected_stream = choose_stream_url(info, stream_url, stream_index)
     if not selected_stream:
@@ -670,12 +673,18 @@ def media_proxy(name: str = "", target: str = "", referer: str | None = None, us
 @app.get("/api/config")
 def get_config():
     cfg = load_config()
-    cfg.setdefault("twitter_cookies_path", str(TWITTER_COOKIES_PATH))
-    cfg.setdefault("youtube_cookies_path", str(YOUTUBE_COOKIES_PATH))
-    cfg.setdefault("bilibili_cookies_path", str(BILIBILI_COOKIES_PATH))
-    cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
-    cfg["youtube_cookies_exists"] = Path(str(cfg.get("youtube_cookies_path") or YOUTUBE_COOKIES_PATH)).exists()
-    cfg["bilibili_cookies_exists"] = Path(str(cfg.get("bilibili_cookies_path") or BILIBILI_COOKIES_PATH)).exists()
+    cfg.setdefault("xck", cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH))
+    cfg.setdefault("youtubeck", cfg.get("youtube_cookies_path") or str(YOUTUBE_COOKIES_PATH))
+    cfg.setdefault("bilibilick", cfg.get("bilibili_cookies_path") or str(BILIBILI_COOKIES_PATH))
+    cfg["twitter_cookies_path"] = cfg.get("xck") or str(TWITTER_COOKIES_PATH)
+    cfg["youtube_cookies_path"] = cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
+    cfg["bilibili_cookies_path"] = cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
+    cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
+    cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
+    cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
+    cfg["twitter_cookies_exists"] = cfg["xck_exists"]
+    cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
+    cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
     return cfg
 
 
@@ -686,13 +695,19 @@ def set_config(payload: ConfigPayload):
     cfg["auto_retry_enabled"] = bool(payload.auto_retry_enabled)
     cfg["auto_retry_delay_seconds"] = max(1, int(payload.auto_retry_delay_seconds or 30))
     cfg["auto_retry_max_attempts"] = max(0, int(payload.auto_retry_max_attempts or 0))
-    cfg["twitter_cookies_path"] = payload.twitter_cookies_path or str(TWITTER_COOKIES_PATH)
-    cfg["youtube_cookies_path"] = payload.youtube_cookies_path or str(YOUTUBE_COOKIES_PATH)
-    cfg["bilibili_cookies_path"] = payload.bilibili_cookies_path or str(BILIBILI_COOKIES_PATH)
+    cfg["xck"] = payload.xck or payload.twitter_cookies_path or cfg.get("xck") or str(TWITTER_COOKIES_PATH)
+    cfg["youtubeck"] = payload.youtubeck or payload.youtube_cookies_path or cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
+    cfg["bilibilick"] = payload.bilibilick or payload.bilibili_cookies_path or cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
+    cfg["twitter_cookies_path"] = cfg["xck"]
+    cfg["youtube_cookies_path"] = cfg["youtubeck"]
+    cfg["bilibili_cookies_path"] = cfg["bilibilick"]
     save_config(cfg)
-    cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
-    cfg["youtube_cookies_exists"] = Path(str(cfg.get("youtube_cookies_path") or YOUTUBE_COOKIES_PATH)).exists()
-    cfg["bilibili_cookies_exists"] = Path(str(cfg.get("bilibili_cookies_path") or BILIBILI_COOKIES_PATH)).exists()
+    cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
+    cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
+    cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
+    cfg["twitter_cookies_exists"] = cfg["xck_exists"]
+    cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
+    cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
     return cfg
 
 
