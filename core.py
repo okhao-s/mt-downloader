@@ -493,6 +493,9 @@ def download_with_ytdlp(
     last_progress = 8
 
     progress_re = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+    size_re = re.compile(r"\[download\]\s+\d+(?:\.\d+)?%\s+of\s+([^\s]+)")
+    speed_re = re.compile(r"at\s+([^\s]+)")
+    eta_re = re.compile(r"ETA\s+([0-9:]+)")
 
     try:
         if process.stdout is not None:
@@ -507,12 +510,26 @@ def download_with_ytdlp(
                 if match and progress_callback:
                     pct = max(8, min(99, int(float(match.group(1)))))
                     last_progress = pct
-                    progress_callback(pct, f"yt-dlp 下载中… {line}")
+                    parts = []
+                    size_match = size_re.search(line)
+                    speed_match = speed_re.search(line)
+                    eta_match = eta_re.search(line)
+                    if size_match:
+                        parts.append(f"总大小 {size_match.group(1)}")
+                    if speed_match:
+                        parts.append(f"速度 {speed_match.group(1)}")
+                    if eta_match:
+                        parts.append(f"剩余 {eta_match.group(1)}")
+                    status = f"已下载 {match.group(1)}%"
+                    if parts:
+                        status += " · " + " · ".join(parts)
+                    progress_callback(pct, status)
                 elif progress_callback and line:
-                    if "Destination:" in line:
-                        progress_callback(max(last_progress, 8), "yt-dlp 已开始拉取视频…")
-                    elif "Merging formats into" in line:
-                        progress_callback(99, "yt-dlp 正在合并音视频…")
+                    lower_line = line.lower()
+                    if "destination:" in lower_line:
+                        progress_callback(max(last_progress, 8), "已开始下载视频")
+                    elif "merging formats into" in lower_line or "recoding video to" in lower_line:
+                        progress_callback(99, "正在合并并转成 MP4")
     finally:
         returncode = process.wait()
 
