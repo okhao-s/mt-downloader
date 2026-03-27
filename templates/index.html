@@ -161,9 +161,20 @@
           </label>
 
           <label class="field field-wide">
-            <span>上传浏览器导出的 cookies.txt</span>
+            <span>上传 X / Twitter 浏览器 cookies.txt</span>
             <input id="twitter_cookies_file" type="file" accept=".txt,text/plain">
             <small id="twitter-cookies-hint" class="field-hint">未上传 cookies，X/Twitter 先按游客模式试。</small>
+          </label>
+
+          <label class="field field-wide">
+            <span>YouTube cookies 路径</span>
+            <input id="cfg_youtube_cookies_path" value="{{ config.youtube_cookies_path or '/app/data/cookies/youtube.cookies.txt' }}" placeholder="/app/data/cookies/youtube.cookies.txt">
+          </label>
+
+          <label class="field field-wide">
+            <span>上传 YouTube 浏览器 cookies.txt</span>
+            <input id="youtube_cookies_file" type="file" accept=".txt,text/plain">
+            <small id="youtube-cookies-hint" class="field-hint">未上传 cookies，YouTube 先按公开视频模式试。</small>
           </label>
         </div>
         <div class="action-row">
@@ -207,6 +218,6 @@
     </section>
   </div>
 
-  <script src="/static/app.js?v=20260326i"></script>
+  <script src="/static/app.js?v=20260327a"></script>
 </body>
 </html>

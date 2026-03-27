@@ -180,6 +180,15 @@ function updateTwitterCookiesHint(data = {}) {
     : `未上传 cookies，X/Twitter 先按游客模式试。建议上传浏览器导出的 cookies.txt。`;
 }
 
+function updateYouTubeCookiesHint(data = {}) {
+  const hint = $('youtube-cookies-hint');
+  if (!hint) return;
+  const path = data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
+  hint.textContent = data?.youtube_cookies_exists
+    ? `已检测到 cookies：${path}。YouTube 下载会自动带上。`
+    : `未上传 cookies，YouTube 先按公开视频模式试。遇到年龄限制/私密限制再补 cookies。`;
+}
+
 function applyConfigToForm(data = {}) {
   $('cfg_proxy').value = data?.default_proxy || '';
   $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
@@ -188,7 +197,11 @@ function applyConfigToForm(data = {}) {
   if ($('cfg_twitter_cookies_path')) {
     $('cfg_twitter_cookies_path').value = data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
   }
+  if ($('cfg_youtube_cookies_path')) {
+    $('cfg_youtube_cookies_path').value = data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
+  }
   updateTwitterCookiesHint(data);
+  updateYouTubeCookiesHint(data);
 }
 
 async function loadConfig() {
@@ -518,6 +531,7 @@ async function saveConfig() {
       auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),
       auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),
       twitter_cookies_path: $('cfg_twitter_cookies_path')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
+      youtube_cookies_path: $('cfg_youtube_cookies_path')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
     });
     applyConfigToForm(data);
     showConfigSummary(data);
@@ -556,6 +570,39 @@ async function uploadTwitterCookies() {
       { label: '下一步', value: '重新贴 X / Twitter 链接直接下载，它会自动带 cookies。' },
     ], { variant: 'success' });
     setStatus('cookies 已上传', 'success');
+  } catch (e) {
+    setStatus(`上传失败：${e.message}`, 'error');
+  }
+}
+
+async function uploadYouTubeCookies() {
+  const fileInput = $('youtube_cookies_file');
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    setStatus('先选一个 YouTube cookies.txt 文件', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    setStatus('上传 YouTube cookies.txt…', 'loading');
+    const res = await fetch('/api/upload/youtube-cookies', {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store'
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.error || `upload failed (${res.status})`);
+    await loadConfig();
+    renderSummary([
+      { label: '当前状态', value: 'YouTube cookies 已上传', success: true, highlight: true },
+      { label: '保存路径', value: data?.path || '/app/data/cookies/youtube.cookies.txt' },
+      { label: '文件大小', value: `${Number(data?.size || 0)} bytes` },
+      { label: '下一步', value: '重新贴 YouTube 链接下载；遇到年龄限制视频时会自动带 cookies。' },
+    ], { variant: 'success' });
+    setStatus('YouTube cookies 已上传', 'success');
   } catch (e) {
     setStatus(`上传失败：${e.message}`, 'error');
   }

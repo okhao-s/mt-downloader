@@ -37,6 +37,7 @@ DOWNLOAD_DIR = Path("/downloads")
 DATA_DIR = Path("/app/data")
 COOKIES_DIR = DATA_DIR / "cookies"
 TWITTER_COOKIES_PATH = COOKIES_DIR / "twitter.cookies.txt"
+YOUTUBE_COOKIES_PATH = COOKIES_DIR / "youtube.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -184,6 +185,7 @@ class ConfigPayload(BaseModel):
     auto_retry_delay_seconds: int = 30
     auto_retry_max_attempts: int = 2
     twitter_cookies_path: str | None = str(TWITTER_COOKIES_PATH)
+    youtube_cookies_path: str | None = str(YOUTUBE_COOKIES_PATH)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -193,11 +195,29 @@ def home(request: Request):
     return templates.TemplateResponse(request, "index.html", {"config": cfg, "jobs": recent})
 
 
+def is_x_url(url: str | None) -> bool:
+    value = str(url or '').lower()
+    return 'x.com/' in value or 'twitter.com/' in value
+
+
+def is_youtube_url(url: str | None) -> bool:
+    value = str(url or '').lower()
+    return 'youtube.com/' in value or 'youtu.be/' in value
+
+
+def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
+    if is_x_url(url):
+        return cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
+    if is_youtube_url(url):
+        return cfg.get('youtube_cookies_path') or str(YOUTUBE_COOKIES_PATH)
+    return cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
+
+
 @app.post("/api/parse")
 def parse_url(payload: ParsePayload):
     cfg = load_config()
     proxy = payload.proxy or cfg.get("default_proxy") or None
-    cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
+    cookies_path = resolve_site_cookies_path(payload.url, cfg)
     info = discover_stream(
         payload.url,
         payload.referer,
@@ -293,11 +313,12 @@ def run_download_job(
         if download_via == "ytdlp":
             target_url = source_url or stream_url or preview_url
             cfg = load_config()
-            cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
-            use_cookies = bool(source_url and ("x.com/" in source_url or "twitter.com/" in source_url) and Path(cookies_path).exists())
+            cookies_path = resolve_site_cookies_path(source_url or target_url, cfg)
+            use_cookies = bool(cookies_path and Path(cookies_path).exists() and (is_x_url(source_url or target_url) or is_youtube_url(source_url or target_url)))
             status_note = "（带 cookies）" if use_cookies else ""
+            force_mp4 = is_youtube_url(source_url or target_url)
             update_job(job_id, status="downloading", progress=8, status_text=f"正在调用 yt-dlp{status_note}… 并发槽 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
-            download_with_ytdlp(target_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, cookies_path=cookies_path if use_cookies else None, progress_callback=on_progress, should_cancel=should_cancel)
+            download_with_ytdlp(target_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, cookies_path=cookies_path if use_cookies else None, progress_callback=on_progress, should_cancel=should_cancel, force_mp4=force_mp4)
         elif download_via == "direct":
             update_job(job_id, status="downloading", progress=8, status_text=f"正在直连下载视频… 并发槽 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
             direct_download(stream_url or preview_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, progress_callback=on_progress, should_cancel=should_cancel)
@@ -367,8 +388,9 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     download_dir = get_download_dir()
     stream_url = payload.stream_url or choose_stream_url(info, payload.stream_url, payload.stream_index)
     extractor = str(info.get("extractor") or "")
-    is_x_url = "x.com/" in (payload.url or "") or "twitter.com/" in (payload.url or "")
-    use_ytdlp_fallback = not stream_url and is_x_url
+    x_url = is_x_url(payload.url)
+    youtube_url = is_youtube_url(payload.url)
+    use_ytdlp_fallback = (not stream_url and x_url) or youtube_url
     if not stream_url and not use_ytdlp_fallback:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
 
@@ -625,7 +647,9 @@ def media_proxy(name: str = "", target: str = "", referer: str | None = None, us
 def get_config():
     cfg = load_config()
     cfg.setdefault("twitter_cookies_path", str(TWITTER_COOKIES_PATH))
+    cfg.setdefault("youtube_cookies_path", str(YOUTUBE_COOKIES_PATH))
     cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
+    cfg["youtube_cookies_exists"] = Path(str(cfg.get("youtube_cookies_path") or YOUTUBE_COOKIES_PATH)).exists()
     return cfg
 
 
@@ -637,8 +661,10 @@ def set_config(payload: ConfigPayload):
     cfg["auto_retry_delay_seconds"] = max(1, int(payload.auto_retry_delay_seconds or 30))
     cfg["auto_retry_max_attempts"] = max(0, int(payload.auto_retry_max_attempts or 0))
     cfg["twitter_cookies_path"] = payload.twitter_cookies_path or str(TWITTER_COOKIES_PATH)
+    cfg["youtube_cookies_path"] = payload.youtube_cookies_path or str(YOUTUBE_COOKIES_PATH)
     save_config(cfg)
     cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
+    cfg["youtube_cookies_exists"] = Path(str(cfg.get("youtube_cookies_path") or YOUTUBE_COOKIES_PATH)).exists()
     return cfg
 
 
@@ -662,4 +688,27 @@ async def upload_twitter_cookies(file: UploadFile = File(...)):
         "path": str(TWITTER_COOKIES_PATH),
         "size": len(content),
         "twitter_cookies_exists": True,
+    }
+
+
+@app.post("/api/upload/youtube-cookies")
+async def upload_youtube_cookies(file: UploadFile = File(...)):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="只收浏览器导出的 cookies.txt")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="cookies 文件是空的")
+    YOUTUBE_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    YOUTUBE_COOKIES_PATH.write_bytes(content)
+
+    cfg = load_config()
+    cfg["youtube_cookies_path"] = str(YOUTUBE_COOKIES_PATH)
+    save_config(cfg)
+
+    return {
+        "ok": True,
+        "path": str(YOUTUBE_COOKIES_PATH),
+        "size": len(content),
+        "youtube_cookies_exists": True,
     }

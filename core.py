@@ -459,8 +459,13 @@ def download_with_ytdlp(
     cookies_path: Optional[str] = None,
     progress_callback=None,
     should_cancel=None,
+    force_mp4: bool = False,
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    ytdlp_output = output_path
+    if force_mp4 and output_path.suffix.lower() == '.mp4':
+        ytdlp_output = output_path.with_suffix('')
 
     cmd = [
         "yt-dlp",
@@ -469,8 +474,10 @@ def download_with_ytdlp(
         "--no-part",
         "--restrict-filenames",
         "-o",
-        str(output_path),
+        str(ytdlp_output),
     ]
+    if force_mp4:
+        cmd += ["--merge-output-format", "mp4", "--recode-video", "mp4"]
     if referer:
         cmd += ["--add-header", f"Referer:{referer}"]
     if user_agent:
@@ -572,9 +579,32 @@ def choose_stream_url(info: dict, selected_url: Optional[str] = None, selected_i
         return streams[selected_index]
 
     source_url = str(info.get("source_url") or "")
-    if "x.com/" in source_url or "twitter.com/" in source_url:
+    if "x.com/" in source_url or "twitter.com/" in source_url or "youtube.com/" in source_url or "youtu.be/" in source_url:
         return choose_best_stream_url(info)
     return streams[0] if streams else None
+
+
+def extract_youtube_streams(meta: dict) -> tuple[list[str], list[dict]]:
+    streams = []
+    options = []
+    for fmt in meta.get('formats', []) or []:
+        fmt_url = fmt.get('url')
+        if not isinstance(fmt_url, str):
+            continue
+        vcodec = str(fmt.get('vcodec') or 'none')
+        if vcodec == 'none':
+            continue
+        width = fmt.get('width')
+        height = fmt.get('height')
+        ext = str(fmt.get('ext') or '')
+        protocol = str(fmt.get('protocol') or '')
+        if not width and not height and '.m3u8' not in fmt_url:
+            continue
+        if ext not in {'mp4', 'webm', 'm4v'} and '.m3u8' not in fmt_url and protocol not in {'https', 'http', 'm3u8_native', 'm3u8'}:
+            continue
+        streams.append(fmt_url)
+        options.append(build_stream_option(fmt_url, fmt, source='yt-dlp-youtube'))
+    return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
 def discover_stream(
@@ -626,18 +656,25 @@ def discover_stream(
 
         extra_streams = []
         extra_options = []
+        is_youtube = "youtube.com/" in url or "youtu.be/" in url
         direct = meta.get("url")
-        if isinstance(direct, str) and ".m3u8" in direct:
-            extra_streams.append(direct)
-            extra_options.append(build_stream_option(direct, meta, source="yt-dlp-direct"))
-        for fmt in meta.get("formats", []) or []:
-            fmt_url = fmt.get("url")
-            if not isinstance(fmt_url, str) or ".m3u8" not in fmt_url:
-                continue
-            if is_probably_audio_only_format(fmt):
-                continue
-            extra_streams.append(fmt_url)
-            extra_options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-format"))
+        if is_youtube:
+            extra_streams, extra_options = extract_youtube_streams(meta)
+            if isinstance(direct, str) and direct and direct not in extra_streams and ('.googlevideo.com/' in direct or '.m3u8' in direct):
+                extra_streams.append(direct)
+                extra_options.append(build_stream_option(direct, meta, source="yt-dlp-youtube-direct"))
+        else:
+            if isinstance(direct, str) and ".m3u8" in direct:
+                extra_streams.append(direct)
+                extra_options.append(build_stream_option(direct, meta, source="yt-dlp-direct"))
+            for fmt in meta.get("formats", []) or []:
+                fmt_url = fmt.get("url")
+                if not isinstance(fmt_url, str) or ".m3u8" not in fmt_url:
+                    continue
+                if is_probably_audio_only_format(fmt):
+                    continue
+                extra_streams.append(fmt_url)
+                extra_options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-format"))
 
         is_x_url = "x.com/" in url or "twitter.com/" in url
         if not extra_streams and is_x_url:
