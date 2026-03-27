@@ -10,13 +10,15 @@
 - 支持 **m3u8 / HLS** 页面解析、预览、下载
 - 支持 **X / Twitter** 视频解析与下载
 - 支持 **YouTube** 轻量下载
-- 支持 **cookies 上传**（X / YouTube 分开管理）
+- 支持 **Bilibili** 视频解析与下载
+- 支持 **cookies 上传**（X / YouTube / Bilibili 分开管理）
 - 支持 **任务队列、重试、历史记录**
 - 支持 **中文简洁下载进度**
 - 下载结果按类型自动分目录：
   - `/downloads/m3u8`
   - `/downloads/x`
   - `/downloads/youtube`
+  - `/downloads/bilibili`
 
 ---
 
@@ -47,7 +49,15 @@
 - 默认只显示 **最高画质**
 - 下载统一强制输出 **MP4**
 - 支持独立的 YouTube `cookies.txt`
+- 遇到脏 cookies / 风控异常时，会自动回退无 cookies 重试
 - 不污染原有 `m3u8 / ffmpeg` 主链
+
+### Bilibili
+
+- 独立站点分流接入
+- 支持解析非 m3u8 视频流，不再只盯 HLS
+- 支持独立的 Bilibili `cookies.txt`
+- 下载结果单独落到 `/downloads/bilibili`
 
 ---
 
@@ -58,6 +68,7 @@
 - **m3u8 / HLS** → 原主链
 - **X / Twitter** → X 专用旁路 / fallback
 - **YouTube** → `yt-dlp` 专线
+- **Bilibili** → 独立站点分流
 
 这么做就一个原因：
 
@@ -121,6 +132,7 @@ docker run -d \
 /downloads/m3u8
 /downloads/x
 /downloads/youtube
+/downloads/bilibili
 ```
 
 如果宿主机挂载的是：
@@ -135,6 +147,7 @@ docker run -d \
 /root/docker/video/m3u8
 /root/docker/video/x
 /root/docker/video/youtube
+/root/docker/video/bilibili
 ```
 
 ---
@@ -163,6 +176,7 @@ docker run -d \
 ```text
 /app/data/cookies/twitter.cookies.txt
 /app/data/cookies/youtube.cookies.txt
+/app/data/cookies/bilibili.cookies.txt
 ```
 
 ### 宿主机常见路径
@@ -170,12 +184,14 @@ docker run -d \
 ```text
 /root/docker/mt-downloader/data/cookies/twitter.cookies.txt
 /root/docker/mt-downloader/data/cookies/youtube.cookies.txt
+/root/docker/mt-downloader/data/cookies/bilibili.cookies.txt
 ```
 
 ### 分流规则
 
 - X / Twitter → 使用 `twitter.cookies.txt`
 - YouTube → 使用 `youtube.cookies.txt`
+- Bilibili → 使用 `bilibili.cookies.txt`
 
 不会混着乱用。
 
@@ -201,8 +217,15 @@ docker run -d \
 - `auto_retry_enabled`
 - `auto_retry_delay_seconds`
 - `auto_retry_max_attempts`
+- `xck`
+- `youtubeck`
+- `bilibilick`
+
+兼容旧字段：
+
 - `twitter_cookies_path`
 - `youtube_cookies_path`
+- `bilibili_cookies_path`
 
 ---
 

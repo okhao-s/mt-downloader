@@ -467,6 +467,15 @@ def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent:
     return json.loads(proc.stdout)
 
 
+def should_retry_youtube_without_cookies(error_text: str) -> bool:
+    text = str(error_text or "").lower()
+    return (
+        "requested format is not available" in text
+        or "sign in to confirm you're not a bot" in text
+        or "use --cookies-from-browser or --cookies for the authentication" in text
+    )
+
+
 def download_with_ytdlp(
     url: str,
     output_path: Path,
@@ -484,76 +493,88 @@ def download_with_ytdlp(
     if force_mp4 and output_path.suffix.lower() == '.mp4':
         ytdlp_output = output_path.with_suffix('')
 
-    cmd = [
-        "yt-dlp",
-        "--ignore-config",
-        "--newline",
-        "--progress",
-        "--no-part",
-        "--restrict-filenames",
-        "-o",
-        str(ytdlp_output),
-    ]
-    if force_mp4:
-        cmd += ["--merge-output-format", "mp4", "--recode-video", "mp4"]
-    if referer:
-        cmd += ["--add-header", f"Referer:{referer}"]
-    if user_agent:
-        cmd += ["--add-header", f"User-Agent:{user_agent}"]
-    if proxy:
-        cmd += ["--proxy", proxy]
-    if cookies_path and Path(cookies_path).exists():
-        cmd += ["--cookies", cookies_path]
-    cmd.append(url)
-
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    lines = []
-    last_progress = 8
-
     progress_re = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
     size_re = re.compile(r"\[download\]\s+\d+(?:\.\d+)?%\s+of\s+([^\s]+)")
     speed_re = re.compile(r"at\s+([^\s]+)")
     eta_re = re.compile(r"ETA\s+([0-9:]+)")
 
-    try:
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                if should_cancel and should_cancel():
-                    process.terminate()
-                    raise RuntimeError("下载已取消")
-                line = raw_line.rstrip()
-                if line:
-                    lines.append(line)
-                match = progress_re.search(line)
-                if match and progress_callback:
-                    pct = max(8, min(99, int(float(match.group(1)))))
-                    last_progress = pct
-                    parts = []
-                    size_match = size_re.search(line)
-                    speed_match = speed_re.search(line)
-                    eta_match = eta_re.search(line)
-                    if size_match:
-                        parts.append(f"总大小 {size_match.group(1)}")
-                    if speed_match:
-                        parts.append(f"速度 {speed_match.group(1)}")
-                    if eta_match:
-                        parts.append(f"剩余 {eta_match.group(1)}")
-                    status = f"已下载 {match.group(1)}%"
-                    if parts:
-                        status += " · " + " · ".join(parts)
-                    progress_callback(pct, status)
-                elif progress_callback and line:
-                    lower_line = line.lower()
-                    if "destination:" in lower_line:
-                        progress_callback(max(last_progress, 8), "已开始下载视频")
-                    elif "merging formats into" in lower_line or "recoding video to" in lower_line:
-                        progress_callback(99, "正在合并并转成 MP4")
-    finally:
-        returncode = process.wait()
+    def run_once(active_cookies_path: Optional[str]):
+        cmd = [
+            "yt-dlp",
+            "--ignore-config",
+            "--newline",
+            "--progress",
+            "--no-part",
+            "--restrict-filenames",
+            "-o",
+            str(ytdlp_output),
+        ]
+        if force_mp4:
+            cmd += ["--merge-output-format", "mp4", "--recode-video", "mp4"]
+        if referer:
+            cmd += ["--add-header", f"Referer:{referer}"]
+        if user_agent:
+            cmd += ["--add-header", f"User-Agent:{user_agent}"]
+        if proxy:
+            cmd += ["--proxy", proxy]
+        if active_cookies_path and Path(active_cookies_path).exists():
+            cmd += ["--cookies", active_cookies_path]
+        cmd.append(url)
 
-    if returncode != 0:
-        detail = "\n".join(lines[-80:]).strip() or f"yt-dlp exited with code {returncode}"
-        raise RuntimeError(detail[-4000:])
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        lines = []
+        last_progress = 8
+
+        try:
+            if process.stdout is not None:
+                for raw_line in process.stdout:
+                    if should_cancel and should_cancel():
+                        process.terminate()
+                        raise RuntimeError("下载已取消")
+                    line = raw_line.rstrip()
+                    if line:
+                        lines.append(line)
+                    match = progress_re.search(line)
+                    if match and progress_callback:
+                        pct = max(8, min(99, int(float(match.group(1)))))
+                        last_progress = pct
+                        parts = []
+                        size_match = size_re.search(line)
+                        speed_match = speed_re.search(line)
+                        eta_match = eta_re.search(line)
+                        if size_match:
+                            parts.append(f"总大小 {size_match.group(1)}")
+                        if speed_match:
+                            parts.append(f"速度 {speed_match.group(1)}")
+                        if eta_match:
+                            parts.append(f"剩余 {eta_match.group(1)}")
+                        status = f"已下载 {match.group(1)}%"
+                        if parts:
+                            status += " · " + " · ".join(parts)
+                        progress_callback(pct, status)
+                    elif progress_callback and line:
+                        lower_line = line.lower()
+                        if "destination:" in lower_line:
+                            progress_callback(max(last_progress, 8), "已开始下载视频")
+                        elif "merging formats into" in lower_line or "recoding video to" in lower_line:
+                            progress_callback(99, "正在合并并转成 MP4")
+        finally:
+            returncode = process.wait()
+
+        if returncode != 0:
+            detail = "\n".join(lines[-80:]).strip() or f"yt-dlp exited with code {returncode}"
+            raise RuntimeError(detail[-4000:])
+
+    is_youtube = "youtube.com/" in url or "youtu.be/" in url
+    try:
+        run_once(cookies_path)
+    except Exception as exc:
+        if is_youtube and cookies_path and Path(cookies_path).exists() and should_retry_youtube_without_cookies(str(exc)):
+            if progress_callback:
+                progress_callback(8, "YouTube cookies 可能失效，正在切换无 cookies 重试…")
+            run_once(None)
+        else:
+            raise
 
     if progress_callback:
         progress_callback(100, "yt-dlp 下载完成")
@@ -714,14 +735,23 @@ def discover_stream(
     except Exception as exc:
         info["errors"].append(f"html 探测失败：{exc}")
 
+    is_youtube = "youtube.com/" in url or "youtu.be/" in url
     try:
         meta = extract_info_with_ytdlp(url, referer, user_agent, proxy, cookies_path)
+    except Exception as exc:
+        if is_youtube and cookies_path and Path(cookies_path).exists() and should_retry_youtube_without_cookies(str(exc)):
+            info["errors"].append(f"yt-dlp 探测失败（带 cookies）：{exc}")
+            meta = extract_info_with_ytdlp(url, referer, user_agent, proxy, None)
+        else:
+            info["errors"].append(f"yt-dlp 探测失败：{exc}")
+            meta = None
+
+    if meta is not None:
         info["title"] = meta.get("title") or info.get("title")
         info["thumbnail"] = meta.get("thumbnail")
 
         extra_streams = []
         extra_options = []
-        is_youtube = "youtube.com/" in url or "youtu.be/" in url
         is_bilibili = "bilibili.com/" in url or "b23.tv/" in url
         direct = meta.get("url")
         if is_youtube:
@@ -782,8 +812,6 @@ def discover_stream(
             info["streams"] = dedupe_keep_order(info["streams"] + extra_streams)
             info["stream_options"] = dedupe_stream_options(info["stream_options"] + extra_options)
             info.update({"resolved_url": choose_stream_url(info, selected_url, selected_index), "is_m3u8": True, "extractor": info.get("extractor") or "yt-dlp"})
-    except Exception as exc:
-        info["errors"].append(f"yt-dlp 探测失败：{exc}")
 
     if not info.get("resolved_url") and info.get("streams"):
         info["resolved_url"] = choose_stream_url(info, selected_url, selected_index)
