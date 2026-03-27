@@ -189,6 +189,15 @@ function updateYouTubeCookiesHint(data = {}) {
     : `未上传 cookies，YouTube 先按公开视频模式试。遇到年龄限制/私密限制再补 cookies。`;
 }
 
+function updateBilibiliCookiesHint(data = {}) {
+  const hint = $('bilibili-cookies-hint');
+  if (!hint) return;
+  const path = data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
+  hint.textContent = data?.bilibili_cookies_exists
+    ? `已检测到 cookies：${path}。Bilibili 解析和下载会自动带上。`
+    : `未上传 cookies，Bilibili 可能触发 412 或拿不到视频流。建议上传浏览器导出的 cookies.txt。`;
+}
+
 function applyConfigToForm(data = {}) {
   $('cfg_proxy').value = data?.default_proxy || '';
   $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
@@ -200,8 +209,12 @@ function applyConfigToForm(data = {}) {
   if ($('cfg_youtube_cookies_path')) {
     $('cfg_youtube_cookies_path').value = data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
   }
+  if ($('cfg_bilibili_cookies_path')) {
+    $('cfg_bilibili_cookies_path').value = data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
+  }
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
+  updateBilibiliCookiesHint(data);
 }
 
 async function loadConfig() {
@@ -328,8 +341,12 @@ function isYouTubeUrl(url = '') {
   return /https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(String(url || ''));
 }
 
+function isBilibiliUrl(url = '') {
+  return /https?:\/\/(?:www\.)?(?:bilibili\.com|b23\.tv)\//i.test(String(url || ''));
+}
+
 function shouldCollapseToBestOnly(url = '') {
-  return isXUrl(url) || isYouTubeUrl(url);
+  return isXUrl(url) || isYouTubeUrl(url) || isBilibiliUrl(url);
 }
 
 function collapseStreamsForDisplay(data) {
@@ -540,6 +557,7 @@ async function saveConfig() {
       auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),
       twitter_cookies_path: $('cfg_twitter_cookies_path')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtube_cookies_path: $('cfg_youtube_cookies_path')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
+      bilibili_cookies_path: $('cfg_bilibili_cookies_path')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
     });
     applyConfigToForm(data);
     showConfigSummary(data);
@@ -611,6 +629,39 @@ async function uploadYouTubeCookies() {
       { label: '下一步', value: '重新贴 YouTube 链接下载；遇到年龄限制视频时会自动带 cookies。' },
     ], { variant: 'success' });
     setStatus('YouTube cookies 已上传', 'success');
+  } catch (e) {
+    setStatus(`上传失败：${e.message}`, 'error');
+  }
+}
+
+async function uploadBilibiliCookies() {
+  const fileInput = $('bilibili_cookies_file');
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    setStatus('先选一个 Bilibili cookies.txt 文件', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    setStatus('上传 Bilibili cookies.txt…', 'loading');
+    const res = await fetch('/api/upload/bilibili-cookies', {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store'
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.error || `upload failed (${res.status})`);
+    await loadConfig();
+    renderSummary([
+      { label: '当前状态', value: 'Bilibili cookies 已上传', success: true, highlight: true },
+      { label: '保存路径', value: data?.path || '/app/data/cookies/bilibili.cookies.txt' },
+      { label: '文件大小', value: `${Number(data?.size || 0)} bytes` },
+      { label: '下一步', value: '重新贴 Bilibili 链接解析或下载；它会自动带 cookies。' },
+    ], { variant: 'success' });
+    setStatus('Bilibili cookies 已上传', 'success');
   } catch (e) {
     setStatus(`上传失败：${e.message}`, 'error');
   }

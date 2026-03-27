@@ -33,6 +33,8 @@ def load_config() -> dict:
         "auto_retry_delay_seconds": 30,
         "auto_retry_max_attempts": 2,
         "twitter_cookies_path": "/app/data/cookies/twitter.cookies.txt",
+        "youtube_cookies_path": "/app/data/cookies/youtube.cookies.txt",
+        "bilibili_cookies_path": "/app/data/cookies/bilibili.cookies.txt",
     }
 
 
@@ -596,7 +598,14 @@ def choose_stream_url(info: dict, selected_url: Optional[str] = None, selected_i
         return streams[selected_index]
 
     source_url = str(info.get("source_url") or "")
-    if "x.com/" in source_url or "twitter.com/" in source_url or "youtube.com/" in source_url or "youtu.be/" in source_url:
+    if (
+        "x.com/" in source_url
+        or "twitter.com/" in source_url
+        or "youtube.com/" in source_url
+        or "youtu.be/" in source_url
+        or "bilibili.com/" in source_url
+        or "b23.tv/" in source_url
+    ):
         return choose_best_stream_url(info)
     return streams[0] if streams else None
 

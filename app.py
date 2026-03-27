@@ -38,6 +38,7 @@ DATA_DIR = Path("/app/data")
 COOKIES_DIR = DATA_DIR / "cookies"
 TWITTER_COOKIES_PATH = COOKIES_DIR / "twitter.cookies.txt"
 YOUTUBE_COOKIES_PATH = COOKIES_DIR / "youtube.cookies.txt"
+BILIBILI_COOKIES_PATH = COOKIES_DIR / "bilibili.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -110,6 +111,8 @@ def get_download_subdir(url: str | None = None) -> Path:
     base_dir = get_download_dir()
     if is_youtube_url(url):
         target = base_dir / "youtube"
+    elif is_bilibili_url(url):
+        target = base_dir / "bilibili"
     elif is_x_url(url):
         target = base_dir / "x"
     else:
@@ -198,6 +201,7 @@ class ConfigPayload(BaseModel):
     auto_retry_max_attempts: int = 2
     twitter_cookies_path: str | None = str(TWITTER_COOKIES_PATH)
     youtube_cookies_path: str | None = str(YOUTUBE_COOKIES_PATH)
+    bilibili_cookies_path: str | None = str(BILIBILI_COOKIES_PATH)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -217,11 +221,18 @@ def is_youtube_url(url: str | None) -> bool:
     return 'youtube.com/' in value or 'youtu.be/' in value
 
 
+def is_bilibili_url(url: str | None) -> bool:
+    value = str(url or '').lower()
+    return 'bilibili.com/' in value or 'b23.tv/' in value
+
+
 def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
     if is_x_url(url):
         return cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
     if is_youtube_url(url):
         return cfg.get('youtube_cookies_path') or str(YOUTUBE_COOKIES_PATH)
+    if is_bilibili_url(url):
+        return cfg.get('bilibili_cookies_path') or str(BILIBILI_COOKIES_PATH)
     return cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
 
 
@@ -387,7 +398,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             "stream_options": [],
         }
     else:
-        cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
+        cookies_path = resolve_site_cookies_path(payload.url, cfg)
         info = discover_stream(
             payload.url,
             payload.referer,
@@ -402,7 +413,8 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     extractor = str(info.get("extractor") or "")
     x_url = is_x_url(payload.url)
     youtube_url = is_youtube_url(payload.url)
-    use_ytdlp_fallback = (not stream_url and x_url) or youtube_url
+    bilibili_url = is_bilibili_url(payload.url)
+    use_ytdlp_fallback = (not stream_url and x_url) or youtube_url or bilibili_url
     if not stream_url and not use_ytdlp_fallback:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
 
@@ -520,7 +532,7 @@ def download(request: Request, payload: DownloadPayload):
 def download_all(request: Request, payload: BatchDownloadPayload):
     cfg = load_config()
     proxy = payload.proxy or cfg.get("default_proxy") or None
-    cookies_path = cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH)
+    cookies_path = resolve_site_cookies_path(payload.url, cfg)
     info = discover_stream(
         payload.url,
         payload.referer,
@@ -660,8 +672,10 @@ def get_config():
     cfg = load_config()
     cfg.setdefault("twitter_cookies_path", str(TWITTER_COOKIES_PATH))
     cfg.setdefault("youtube_cookies_path", str(YOUTUBE_COOKIES_PATH))
+    cfg.setdefault("bilibili_cookies_path", str(BILIBILI_COOKIES_PATH))
     cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtube_cookies_exists"] = Path(str(cfg.get("youtube_cookies_path") or YOUTUBE_COOKIES_PATH)).exists()
+    cfg["bilibili_cookies_exists"] = Path(str(cfg.get("bilibili_cookies_path") or BILIBILI_COOKIES_PATH)).exists()
     return cfg
 
 
@@ -674,9 +688,11 @@ def set_config(payload: ConfigPayload):
     cfg["auto_retry_max_attempts"] = max(0, int(payload.auto_retry_max_attempts or 0))
     cfg["twitter_cookies_path"] = payload.twitter_cookies_path or str(TWITTER_COOKIES_PATH)
     cfg["youtube_cookies_path"] = payload.youtube_cookies_path or str(YOUTUBE_COOKIES_PATH)
+    cfg["bilibili_cookies_path"] = payload.bilibili_cookies_path or str(BILIBILI_COOKIES_PATH)
     save_config(cfg)
     cfg["twitter_cookies_exists"] = Path(str(cfg.get("twitter_cookies_path") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtube_cookies_exists"] = Path(str(cfg.get("youtube_cookies_path") or YOUTUBE_COOKIES_PATH)).exists()
+    cfg["bilibili_cookies_exists"] = Path(str(cfg.get("bilibili_cookies_path") or BILIBILI_COOKIES_PATH)).exists()
     return cfg
 
 
@@ -723,4 +739,27 @@ async def upload_youtube_cookies(file: UploadFile = File(...)):
         "path": str(YOUTUBE_COOKIES_PATH),
         "size": len(content),
         "youtube_cookies_exists": True,
+    }
+
+
+@app.post("/api/upload/bilibili-cookies")
+async def upload_bilibili_cookies(file: UploadFile = File(...)):
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="只收浏览器导出的 cookies.txt")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="cookies 文件是空的")
+    BILIBILI_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BILIBILI_COOKIES_PATH.write_bytes(content)
+
+    cfg = load_config()
+    cfg["bilibili_cookies_path"] = str(BILIBILI_COOKIES_PATH)
+    save_config(cfg)
+
+    return {
+        "ok": True,
+        "path": str(BILIBILI_COOKIES_PATH),
+        "size": len(content),
+        "bilibili_cookies_exists": True,
     }

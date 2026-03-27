@@ -176,11 +176,23 @@
             <input id="youtube_cookies_file" type="file" accept=".txt,text/plain">
             <small id="youtube-cookies-hint" class="field-hint">未上传 cookies，YouTube 先按公开视频模式试。</small>
           </label>
+
+          <label class="field field-wide">
+            <span>Bilibili cookies 路径</span>
+            <input id="cfg_bilibili_cookies_path" value="{{ config.bilibili_cookies_path or '/app/data/cookies/bilibili.cookies.txt' }}" placeholder="/app/data/cookies/bilibili.cookies.txt">
+          </label>
+
+          <label class="field field-wide">
+            <span>上传 Bilibili 浏览器 cookies.txt</span>
+            <input id="bilibili_cookies_file" type="file" accept=".txt,text/plain">
+            <small id="bilibili-cookies-hint" class="field-hint">未上传 cookies，Bilibili 可能会返回 412 或拿不到视频流。</small>
+          </label>
         </div>
         <div class="action-row">
           <button class="btn btn-secondary" onclick="saveConfig()">保存设置</button>
           <button class="btn btn-inline" type="button" onclick="uploadTwitterCookies()">上传 X / Twitter cookies</button>
           <button class="btn btn-inline" type="button" onclick="uploadYouTubeCookies()">上传 YouTube cookies</button>
+          <button class="btn btn-inline" type="button" onclick="uploadBilibiliCookies()">上传 Bilibili cookies</button>
         </div>
       </div>
     </section>
@@ -219,6 +231,6 @@
     </section>
   </div>
 
-  <script src="/static/app.js?v=20260327c"></script>
+  <script src="/static/app.js?v=20260327d"></script>
 </body>
 </html>
