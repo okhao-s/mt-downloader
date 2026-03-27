@@ -82,6 +82,21 @@ def is_m3u8_url(url: str) -> bool:
     return path.endswith(".m3u8") or ".m3u8?" in url.lower() or "m3u8" in path
 
 
+def detect_platform(url: Optional[str]) -> str:
+    value = str(url or "").lower()
+    if "x.com/" in value or "twitter.com/" in value:
+        return "x"
+    if "youtube.com/" in value or "youtu.be/" in value:
+        return "youtube"
+    if "bilibili.com/" in value or "b23.tv/" in value:
+        return "bilibili"
+    return "generic"
+
+
+def prefers_best_stream(url: Optional[str]) -> bool:
+    return detect_platform(url) in {"x", "youtube", "bilibili"}
+
+
 def dedupe_keep_order(items: list[str]) -> list[str]:
     seen = set()
     result = []
@@ -476,6 +491,16 @@ def should_retry_youtube_without_cookies(error_text: str) -> bool:
     )
 
 
+def should_hint_bilibili_cookies(error_text: str) -> bool:
+    text = str(error_text or "").lower()
+    return (
+        "412" in text
+        or "precondition failed" in text
+        or "risk control" in text
+        or "风控" in text
+    )
+
+
 def download_with_ytdlp(
     url: str,
     output_path: Path,
@@ -565,7 +590,7 @@ def download_with_ytdlp(
             detail = "\n".join(lines[-80:]).strip() or f"yt-dlp exited with code {returncode}"
             raise RuntimeError(detail[-4000:])
 
-    is_youtube = "youtube.com/" in url or "youtu.be/" in url
+    is_youtube = detect_platform(url) == "youtube"
     try:
         run_once(cookies_path)
     except Exception as exc:
@@ -635,14 +660,7 @@ def choose_stream_url(info: dict, selected_url: Optional[str] = None, selected_i
         return streams[selected_index]
 
     source_url = str(info.get("source_url") or "")
-    if (
-        "x.com/" in source_url
-        or "twitter.com/" in source_url
-        or "youtube.com/" in source_url
-        or "youtu.be/" in source_url
-        or "bilibili.com/" in source_url
-        or "b23.tv/" in source_url
-    ):
+    if prefers_best_stream(source_url):
         return choose_best_stream_url(info)
     return streams[0] if streams else None
 
@@ -693,6 +711,96 @@ def extract_bilibili_streams(meta: dict) -> tuple[list[str], list[dict]]:
     return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
+def extract_generic_ytdlp_streams(meta: dict) -> tuple[list[str], list[dict]]:
+    streams = []
+    options = []
+    direct = meta.get("url")
+    if isinstance(direct, str) and ".m3u8" in direct:
+        streams.append(direct)
+        options.append(build_stream_option(direct, meta, source="yt-dlp-direct"))
+    for fmt in meta.get("formats", []) or []:
+        fmt_url = fmt.get("url")
+        if not isinstance(fmt_url, str) or ".m3u8" not in fmt_url:
+            continue
+        if is_probably_audio_only_format(fmt):
+            continue
+        streams.append(fmt_url)
+        options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-format"))
+    return dedupe_keep_order(streams), dedupe_stream_options(options)
+
+
+def extract_platform_streams(platform: str, meta: dict) -> tuple[list[str], list[dict]]:
+    direct = meta.get("url")
+    if platform == "youtube":
+        streams, options = extract_youtube_streams(meta)
+        if isinstance(direct, str) and direct and direct not in streams and ('.googlevideo.com/' in direct or '.m3u8' in direct):
+            streams.append(direct)
+            options.append(build_stream_option(direct, meta, source="yt-dlp-youtube-direct"))
+        return dedupe_keep_order(streams), dedupe_stream_options(options)
+    if platform == "bilibili":
+        streams, options = extract_bilibili_streams(meta)
+        if isinstance(direct, str) and direct and direct not in streams:
+            streams.append(direct)
+            options.append(build_stream_option(direct, meta, source="yt-dlp-bilibili-direct"))
+        return dedupe_keep_order(streams), dedupe_stream_options(options)
+    return extract_generic_ytdlp_streams(meta)
+
+
+def extract_x_status_id(url: str) -> Optional[str]:
+    match = re.search(r'/status/(\d+)', url)
+    return match.group(1) if match else None
+
+
+def apply_stream_results(info: dict, streams: list[str], options: list[dict], selected_url: Optional[str] = None, selected_index: Optional[int] = None, extractor: Optional[str] = None):
+    if not streams:
+        return info
+    info["streams"] = dedupe_keep_order((info.get("streams") or []) + streams)
+    info["stream_options"] = dedupe_stream_options((info.get("stream_options") or []) + options)
+    info["resolved_url"] = choose_stream_url(info, selected_url, selected_index)
+    info["is_m3u8"] = True
+    if extractor:
+        info["extractor"] = extractor
+    elif not info.get("extractor"):
+        info["extractor"] = "yt-dlp"
+    return info
+
+
+def try_x_fallback_streams(url: str, info: dict, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> tuple[list[str], list[dict], Optional[str]]:
+    extra_streams = []
+    extra_options = []
+    extractor = None
+
+    try:
+        html = fetch_webpage_html(url, referer, user_agent, proxy)
+        fallback_streams = [s for s in extract_twitter_fallback_streams(html) if ".m3u8" in s or ".mp4" in s]
+        if fallback_streams:
+            extra_streams.extend(fallback_streams)
+            extra_options.extend([build_stream_option(s, source="twitter-fallback") for s in fallback_streams])
+            if not info.get("title"):
+                info["title"] = extract_title_from_html(html)
+            return extra_streams, extra_options, extractor
+    except Exception as html_exc:
+        info["errors"].append(f"x-html fallback 失败：{html_exc}")
+
+    rest_id = extract_x_status_id(url)
+    if rest_id:
+        try:
+            payload = fetch_x_graphql_tweet_result(rest_id, cookies_path, user_agent, proxy)
+            gql_info = extract_x_streams_from_graphql_payload(payload)
+            gql_streams = gql_info.get('streams') or []
+            gql_options = gql_info.get('stream_options') or []
+            if gql_streams:
+                extra_streams.extend(gql_streams)
+                extra_options.extend(gql_options)
+                info['title'] = info.get('title') or gql_info.get('title')
+                info['thumbnail'] = info.get('thumbnail') or gql_info.get('thumbnail')
+                extractor = 'x-graphql'
+        except Exception as gql_exc:
+            info['errors'].append(f"x-graphql fallback 失败：{gql_exc}")
+
+    return extra_streams, extra_options, extractor
+
+
 def discover_stream(
     url: str,
     referer: Optional[str] = None,
@@ -729,13 +837,19 @@ def discover_stream(
         if page.get("title"):
             info["title"] = page["title"]
         if streams:
-            info["streams"] = dedupe_keep_order(info["streams"] + streams)
-            info["stream_options"] = dedupe_stream_options(info["stream_options"] + (page.get("stream_options") or []))
-            info.update({"resolved_url": choose_stream_url({"streams": info["streams"]}, selected_url, selected_index), "is_m3u8": True, "extractor": "html"})
+            apply_stream_results(
+                info,
+                streams,
+                page.get("stream_options") or [],
+                selected_url,
+                selected_index,
+                extractor="html",
+            )
     except Exception as exc:
         info["errors"].append(f"html 探测失败：{exc}")
 
-    is_youtube = "youtube.com/" in url or "youtu.be/" in url
+    platform = detect_platform(url)
+    is_youtube = platform == "youtube"
     try:
         meta = extract_info_with_ytdlp(url, referer, user_agent, proxy, cookies_path)
     except Exception as exc:
@@ -750,68 +864,31 @@ def discover_stream(
         info["title"] = meta.get("title") or info.get("title")
         info["thumbnail"] = meta.get("thumbnail")
 
-        extra_streams = []
-        extra_options = []
-        is_bilibili = "bilibili.com/" in url or "b23.tv/" in url
-        direct = meta.get("url")
-        if is_youtube:
-            extra_streams, extra_options = extract_youtube_streams(meta)
-            if isinstance(direct, str) and direct and direct not in extra_streams and ('.googlevideo.com/' in direct or '.m3u8' in direct):
-                extra_streams.append(direct)
-                extra_options.append(build_stream_option(direct, meta, source="yt-dlp-youtube-direct"))
-        elif is_bilibili:
-            extra_streams, extra_options = extract_bilibili_streams(meta)
-            if isinstance(direct, str) and direct and direct not in extra_streams:
-                extra_streams.append(direct)
-                extra_options.append(build_stream_option(direct, meta, source="yt-dlp-bilibili-direct"))
-        else:
-            if isinstance(direct, str) and ".m3u8" in direct:
-                extra_streams.append(direct)
-                extra_options.append(build_stream_option(direct, meta, source="yt-dlp-direct"))
-            for fmt in meta.get("formats", []) or []:
-                fmt_url = fmt.get("url")
-                if not isinstance(fmt_url, str) or ".m3u8" not in fmt_url:
-                    continue
-                if is_probably_audio_only_format(fmt):
-                    continue
-                extra_streams.append(fmt_url)
-                extra_options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-format"))
+        extra_streams, extra_options = extract_platform_streams(platform, meta)
 
-        is_x_url = "x.com/" in url or "twitter.com/" in url
-        if not extra_streams and is_x_url:
-            try:
-                html = fetch_webpage_html(url, referer, user_agent, proxy)
-                fallback_streams = [s for s in extract_twitter_fallback_streams(html) if ".m3u8" in s or ".mp4" in s]
-                if fallback_streams:
-                    extra_streams.extend(fallback_streams)
-                    extra_options.extend([build_stream_option(s, source="twitter-fallback") for s in fallback_streams])
-                    if not info.get("title"):
-                        info["title"] = extract_title_from_html(html)
-            except Exception as html_exc:
-                info["errors"].append(f"x-html fallback 失败：{html_exc}")
-
-        if not extra_streams and is_x_url:
-            rest_id_match = re.search(r'/status/(\d+)', url)
-            rest_id = rest_id_match.group(1) if rest_id_match else None
-            if rest_id:
-                try:
-                    payload = fetch_x_graphql_tweet_result(rest_id, cookies_path, user_agent, proxy)
-                    gql_info = extract_x_streams_from_graphql_payload(payload)
-                    gql_streams = gql_info.get('streams') or []
-                    gql_options = gql_info.get('stream_options') or []
-                    if gql_streams:
-                        extra_streams.extend(gql_streams)
-                        extra_options.extend(gql_options)
-                        info['title'] = info.get('title') or gql_info.get('title')
-                        info['thumbnail'] = info.get('thumbnail') or gql_info.get('thumbnail')
-                        info['extractor'] = 'x-graphql'
-                except Exception as gql_exc:
-                    info['errors'].append(f"x-graphql fallback 失败：{gql_exc}")
+        if platform == "x" and not extra_streams:
+            fallback_streams, fallback_options, fallback_extractor = try_x_fallback_streams(
+                url,
+                info,
+                referer,
+                user_agent,
+                proxy,
+                cookies_path,
+            )
+            extra_streams.extend(fallback_streams)
+            extra_options.extend(fallback_options)
+            if fallback_extractor:
+                info["extractor"] = fallback_extractor
 
         if extra_streams:
-            info["streams"] = dedupe_keep_order(info["streams"] + extra_streams)
-            info["stream_options"] = dedupe_stream_options(info["stream_options"] + extra_options)
-            info.update({"resolved_url": choose_stream_url(info, selected_url, selected_index), "is_m3u8": True, "extractor": info.get("extractor") or "yt-dlp"})
+            apply_stream_results(
+                info,
+                extra_streams,
+                extra_options,
+                selected_url,
+                selected_index,
+                extractor=info.get("extractor") or "yt-dlp",
+            )
 
     if not info.get("resolved_url") and info.get("streams"):
         info["resolved_url"] = choose_stream_url(info, selected_url, selected_index)

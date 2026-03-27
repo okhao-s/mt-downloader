@@ -21,6 +21,7 @@ from core import (
     build_headers,
     build_proxies,
     choose_stream_url,
+    detect_platform,
     discover_stream,
     download_with_ytdlp,
     ffmpeg_download,
@@ -29,6 +30,7 @@ from core import (
     normalize_filename,
     rewrite_m3u8_manifest,
     save_config,
+    should_hint_bilibili_cookies,
 )
 
 app = FastAPI(title="M3U8 Downloader")
@@ -176,6 +178,44 @@ def schedule_retry(job_id: str, delay_seconds: int):
     threading.Thread(target=delayed_retry, name=f"mt-retry-{job_id}", daemon=True).start()
 
 
+def should_use_site_cookies(target_url: str | None, cookies_path: str | None) -> bool:
+    return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili"})
+
+
+def resolve_download_mode(platform: str, stream_url: str | None) -> str:
+    if platform in {"youtube", "bilibili"}:
+        return "ytdlp"
+    if platform == "x" and not stream_url:
+        return "ytdlp"
+    if stream_url and not is_m3u8_url(stream_url):
+        return "direct"
+    return "hls"
+
+
+def build_preview_url(
+    source_url: str,
+    stream_url: str | None,
+    referer: str | None = None,
+    user_agent: str | None = None,
+    proxy: str | None = None,
+    stream_index: int | None = None,
+) -> str:
+    preview_url = f"{INTERNAL_BASE_URL}/api/preview.m3u8"
+    if not stream_url:
+        return preview_url
+
+    preview_params = {"url": source_url, "stream_url": stream_url}
+    if referer:
+        preview_params["referer"] = referer
+    if user_agent:
+        preview_params["user_agent"] = user_agent
+    if proxy:
+        preview_params["proxy"] = proxy
+    if stream_index is not None:
+        preview_params["stream_index"] = str(stream_index)
+    return requests.Request("GET", preview_url, params=preview_params).prepare().url
+
+
 class ParsePayload(BaseModel):
     url: str
     referer: str | None = None
@@ -214,19 +254,20 @@ def home(request: Request):
     return templates.TemplateResponse(request, "index.html", {"config": cfg, "jobs": recent})
 
 
+def get_platform(url: str | None) -> str:
+    return detect_platform(url)
+
+
 def is_x_url(url: str | None) -> bool:
-    value = str(url or '').lower()
-    return 'x.com/' in value or 'twitter.com/' in value
+    return get_platform(url) == "x"
 
 
 def is_youtube_url(url: str | None) -> bool:
-    value = str(url or '').lower()
-    return 'youtube.com/' in value or 'youtu.be/' in value
+    return get_platform(url) == "youtube"
 
 
 def is_bilibili_url(url: str | None) -> bool:
-    value = str(url or '').lower()
-    return 'bilibili.com/' in value or 'b23.tv/' in value
+    return get_platform(url) == "bilibili"
 
 
 def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
@@ -257,6 +298,8 @@ def parse_url(payload: ParsePayload):
         detail = "未解析到可下载视频"
         if info.get("errors"):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
+            if get_platform(payload.url) == "bilibili" and should_hint_bilibili_cookies(detail):
+                detail += "\n建议：上传有效的 Bilibili cookies.txt 后重试（当前大概率被 412 风控拦了）"
         raise HTTPException(status_code=404, detail=detail)
     chosen_stream = choose_stream_url(info, payload.stream_url, payload.stream_index)
     preview_parts = [f"url={quote(payload.url, safe='')}" ]
@@ -340,9 +383,9 @@ def run_download_job(
             target_url = source_url or stream_url or preview_url
             cfg = load_config()
             cookies_path = resolve_site_cookies_path(source_url or target_url, cfg)
-            use_cookies = bool(cookies_path and Path(cookies_path).exists() and (is_x_url(source_url or target_url) or is_youtube_url(source_url or target_url) or is_bilibili_url(source_url or target_url)))
+            use_cookies = should_use_site_cookies(source_url or target_url, cookies_path)
             status_note = "（带 cookies）" if use_cookies else ""
-            force_mp4 = is_youtube_url(source_url or target_url)
+            force_mp4 = get_platform(source_url or target_url) == "youtube"
             update_job(job_id, status="downloading", progress=8, status_text=f"开始抓取视频{status_note} · 当前下载槽位 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
             download_with_ytdlp(target_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, cookies_path=cookies_path if use_cookies else None, progress_callback=on_progress, should_cancel=should_cancel, force_mp4=force_mp4)
         elif download_via == "direct":
@@ -414,9 +457,10 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     download_dir = get_download_subdir(payload.url)
     stream_url = payload.stream_url or choose_stream_url(info, payload.stream_url, payload.stream_index)
     extractor = str(info.get("extractor") or "")
-    x_url = is_x_url(payload.url)
-    youtube_url = is_youtube_url(payload.url)
-    bilibili_url = is_bilibili_url(payload.url)
+    platform = get_platform(payload.url)
+    x_url = platform == "x"
+    youtube_url = platform == "youtube"
+    bilibili_url = platform == "bilibili"
     use_ytdlp_fallback = (not stream_url and x_url) or youtube_url or bilibili_url
     if not stream_url and not use_ytdlp_fallback:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
@@ -425,19 +469,14 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     output_name = allocate_output_name(suggested_name, download_dir=download_dir)
     output_path = download_dir / output_name
 
-    preview_url = f"{INTERNAL_BASE_URL}/api/preview.m3u8"
-    resp_url = preview_url
-    if stream_url:
-        preview_params = {"url": payload.url, "stream_url": stream_url}
-        if payload.referer:
-            preview_params["referer"] = payload.referer
-        if payload.user_agent:
-            preview_params["user_agent"] = payload.user_agent
-        if proxy:
-            preview_params["proxy"] = proxy
-        if payload.stream_index is not None:
-            preview_params["stream_index"] = str(payload.stream_index)
-        resp_url = requests.Request("GET", preview_url, params=preview_params).prepare().url
+    resp_url = build_preview_url(
+        payload.url,
+        stream_url,
+        payload.referer,
+        payload.user_agent,
+        proxy,
+        payload.stream_index,
+    )
 
     retry_count = 0
     if retry_of:
@@ -447,13 +486,8 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
 
     queued_ahead = count_queued_jobs()
     active_now = count_active_jobs()
-    if use_ytdlp_fallback:
-        download_via = "ytdlp"
-    elif stream_url and not is_m3u8_url(stream_url):
-        download_via = "direct"
-    else:
-        download_via = "hls"
-    if use_ytdlp_fallback and not payload.output and is_x_url:
+    download_via = resolve_download_mode(platform, stream_url)
+    if download_via == "ytdlp" and not payload.output and x_url:
         base_name = info.get("title") or f"x-video-{uuid4().hex[:8]}"
         output_name = allocate_output_name(base_name, download_dir=download_dir)
         output_path = download_dir / output_name
@@ -549,8 +583,8 @@ def download_all(request: Request, payload: BatchDownloadPayload):
     if not streams:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
 
-    is_x_url = "x.com/" in (payload.url or "") or "twitter.com/" in (payload.url or "")
-    if is_x_url:
+    platform = get_platform(payload.url)
+    if platform == "x":
         best_stream = choose_stream_url(info)
         if not best_stream:
             raise HTTPException(status_code=404, detail="未解析到可下载视频")
