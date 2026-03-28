@@ -63,10 +63,14 @@
 
 ### Douyin / 抖音
 
+- 当前已验证：**无 cookies** 也能走分享页源码解析 + 直链下载链路，保持轻量单服务，不依赖浏览器或多容器
+- 已拿到 Douyin / aweme / CDN 直链时，优先 direct 下载，不强制回退 `yt-dlp`
 - 当前优先走 **移动分享页源码解析**，不依赖 PC Web detail 空接口
 - 从 `iesdouyin / m.douyin` 分享页源码提取 `video_id / play_addr`
-- 优先使用 `/aweme/v1/play/` 直链，必要时回退 `/playwm/`
-- 下载阶段继续复用 `yt-dlp` 下载直链，不额外引入重型浏览器依赖
+- 优先使用 `/aweme/v1/play/` 直链，必要时回退 `/playwm/`，并避免 `play/playwm` 双视频重复
+- `requests` 超时后会自动尝试 `curl` fallback
+- Douyin 标题优先取 `desc / share_desc`，页面展示保留完整标题
+- 下载文件名使用 `suggested_output`，会做净化并按长度裁剪
 - 下载结果单独落到 `/downloads/douyin`
 
 ---
@@ -117,6 +121,8 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 ```
+
+> 当前已验证的这轮修复已包含在 `okhao/mt:latest`，也可显式使用镜像标签：`okhao/mt:title-filename-fixes-20260328-0803`
 
 ---
 
