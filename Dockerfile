@@ -7,7 +7,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir fastapi uvicorn requests yt-dlp jinja2 python-multipart httpx
+RUN pip install --no-cache-dir fastapi uvicorn requests yt-dlp jinja2 python-multipart httpx pycryptodome
 
 WORKDIR /app
 COPY . /app

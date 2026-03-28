@@ -35,6 +35,13 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg["youtube_cookies_path"] = youtubeck
     cfg["bilibili_cookies_path"] = bilibilick
     cfg["douyin_cookies_path"] = douyinck
+    cfg["wecom_enabled"] = bool(cfg.get("wecom_enabled", False))
+    cfg["wecom_corp_id"] = str(cfg.get("wecom_corp_id") or os.getenv("WECOM_CORP_ID") or "")
+    cfg["wecom_agent_id"] = str(cfg.get("wecom_agent_id") or os.getenv("WECOM_AGENT_ID") or "")
+    cfg["wecom_secret"] = str(cfg.get("wecom_secret") or os.getenv("WECOM_SECRET") or "")
+    cfg["wecom_token"] = str(cfg.get("wecom_token") or os.getenv("WECOM_TOKEN") or "")
+    cfg["wecom_encoding_aes_key"] = str(cfg.get("wecom_encoding_aes_key") or os.getenv("WECOM_ENCODING_AES_KEY") or "")
+    cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or os.getenv("WECOM_CALLBACK_URL") or "")
     return cfg
 
 
@@ -53,6 +60,13 @@ def load_config() -> dict:
         "youtubeck": "/app/data/cookies/youtube.cookies.txt",
         "bilibilick": "/app/data/cookies/bilibili.cookies.txt",
         "douyinck": "/app/data/cookies/douyin.cookies.txt",
+        "wecom_enabled": False,
+        "wecom_corp_id": os.getenv("WECOM_CORP_ID", ""),
+        "wecom_agent_id": os.getenv("WECOM_AGENT_ID", ""),
+        "wecom_secret": os.getenv("WECOM_SECRET", ""),
+        "wecom_token": os.getenv("WECOM_TOKEN", ""),
+        "wecom_encoding_aes_key": os.getenv("WECOM_ENCODING_AES_KEY", ""),
+        "wecom_callback_url": os.getenv("WECOM_CALLBACK_URL", ""),
     })
 
 

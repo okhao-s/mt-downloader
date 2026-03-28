@@ -1,0 +1,195 @@
+import base64
+import hashlib
+import os
+import secrets
+import struct
+import threading
+import time
+import xml.etree.ElementTree as ET
+from typing import Optional
+
+import requests
+from Crypto.Cipher import AES
+
+WECOM_TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+WECOM_SEND_MESSAGE_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/send"
+BLOCK_SIZE = 32
+
+
+def _pkcs7_pad(data: bytes) -> bytes:
+    pad_len = BLOCK_SIZE - (len(data) % BLOCK_SIZE)
+    if pad_len == 0:
+        pad_len = BLOCK_SIZE
+    return data + bytes([pad_len]) * pad_len
+
+
+def _pkcs7_unpad(data: bytes) -> bytes:
+    if not data:
+        raise ValueError("empty data")
+    pad_len = data[-1]
+    if pad_len < 1 or pad_len > BLOCK_SIZE:
+        raise ValueError("invalid padding")
+    if data[-pad_len:] != bytes([pad_len]) * pad_len:
+        raise ValueError("invalid padding bytes")
+    return data[:-pad_len]
+
+
+def _sha1_signature(token: str, timestamp: str, nonce: str, encrypted: str) -> str:
+    parts = sorted([str(token or ""), str(timestamp or ""), str(nonce or ""), str(encrypted or "")])
+    return hashlib.sha1("".join(parts).encode("utf-8")).hexdigest()
+
+
+def _xml_text(root: ET.Element, tag: str) -> str:
+    value = root.findtext(tag)
+    return str(value or "").strip()
+
+
+class WeComCrypto:
+    def __init__(self, token: str, encoding_aes_key: str, corp_id: str):
+        self.token = str(token or "")
+        self.corp_id = str(corp_id or "")
+        key = str(encoding_aes_key or "").strip()
+        if len(key) != 43:
+            raise ValueError("企业微信 EncodingAESKey 长度不对")
+        self.aes_key = base64.b64decode(key + "=")
+        self.iv = self.aes_key[:16]
+
+    def verify_signature(self, msg_signature: str, timestamp: str, nonce: str, encrypted: str) -> bool:
+        expected = _sha1_signature(self.token, timestamp, nonce, encrypted)
+        return secrets.compare_digest(expected, str(msg_signature or ""))
+
+    def decrypt(self, encrypted: str) -> str:
+        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
+        decoded = base64.b64decode(str(encrypted or ""))
+        plain = _pkcs7_unpad(cipher.decrypt(decoded))
+        if len(plain) < 20:
+            raise ValueError("企业微信密文长度异常")
+        msg_len = struct.unpack("!I", plain[16:20])[0]
+        xml_bytes = plain[20:20 + msg_len]
+        receive_id = plain[20 + msg_len:].decode("utf-8")
+        if self.corp_id and receive_id != self.corp_id:
+            raise ValueError("企业微信 receive_id/corp_id 不匹配")
+        return xml_bytes.decode("utf-8")
+
+    def encrypt(self, plain_text: str, nonce: Optional[str] = None, timestamp: Optional[str] = None) -> dict:
+        nonce = str(nonce or secrets.token_hex(8))
+        timestamp = str(timestamp or int(time.time()))
+        plain_bytes = str(plain_text or "").encode("utf-8")
+        raw = secrets.token_bytes(16) + struct.pack("!I", len(plain_bytes)) + plain_bytes + self.corp_id.encode("utf-8")
+        cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
+        encrypted = base64.b64encode(cipher.encrypt(_pkcs7_pad(raw))).decode("utf-8")
+        signature = _sha1_signature(self.token, timestamp, nonce, encrypted)
+        xml = (
+            "<xml>"
+            f"<Encrypt><![CDATA[{encrypted}]]></Encrypt>"
+            f"<MsgSignature><![CDATA[{signature}]]></MsgSignature>"
+            f"<TimeStamp>{timestamp}</TimeStamp>"
+            f"<Nonce><![CDATA[{nonce}]]></Nonce>"
+            "</xml>"
+        )
+        return {
+            "encrypt": encrypted,
+            "msg_signature": signature,
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "xml": xml,
+        }
+
+    def decrypt_echostr(self, msg_signature: str, timestamp: str, nonce: str, echostr: str) -> str:
+        if not self.verify_signature(msg_signature, timestamp, nonce, echostr):
+            raise ValueError("企业微信签名校验失败")
+        return self.decrypt(echostr)
+
+    def decrypt_message_xml(self, body: str, msg_signature: str, timestamp: str, nonce: str) -> dict:
+        root = ET.fromstring(body)
+        encrypted = _xml_text(root, "Encrypt")
+        if not encrypted:
+            raise ValueError("企业微信消息缺少 Encrypt")
+        if not self.verify_signature(msg_signature, timestamp, nonce, encrypted):
+            raise ValueError("企业微信签名校验失败")
+        plain_xml = self.decrypt(encrypted)
+        plain_root = ET.fromstring(plain_xml)
+        data = {child.tag: (child.text or "") for child in plain_root}
+        data["_xml"] = plain_xml
+        return data
+
+
+class WeComClient:
+    def __init__(self, corp_id: str, agent_id: str | int, secret: str, timeout: int = 10):
+        self.corp_id = str(corp_id or "")
+        self.agent_id = int(agent_id)
+        self.secret = str(secret or "")
+        self.timeout = timeout
+        self._token = None
+        self._token_expire_at = 0.0
+        self._lock = threading.Lock()
+
+    def _fetch_access_token(self) -> str:
+        resp = requests.get(
+            WECOM_TOKEN_URL,
+            params={"corpid": self.corp_id, "corpsecret": self.secret},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("errcode") != 0:
+            raise RuntimeError(f"企业微信获取 access_token 失败: {data.get('errmsg') or data}")
+        token = str(data.get("access_token") or "")
+        expires_in = int(data.get("expires_in") or 7200)
+        if not token:
+            raise RuntimeError("企业微信 access_token 为空")
+        self._token = token
+        self._token_expire_at = time.time() + max(60, expires_in - 120)
+        return token
+
+    def get_access_token(self, force_refresh: bool = False) -> str:
+        with self._lock:
+            if force_refresh or not self._token or time.time() >= self._token_expire_at:
+                return self._fetch_access_token()
+            return self._token
+
+    def send_text(self, to_user: str, content: str) -> dict:
+        payload = {
+            "touser": str(to_user or ""),
+            "msgtype": "text",
+            "agentid": self.agent_id,
+            "text": {"content": str(content or "")},
+            "safe": 0,
+            "enable_id_trans": 0,
+            "enable_duplicate_check": 0,
+        }
+        token = self.get_access_token()
+        resp = requests.post(
+            WECOM_SEND_MESSAGE_URL,
+            params={"access_token": token},
+            json=payload,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("errcode") == 42001:
+            token = self.get_access_token(force_refresh=True)
+            resp = requests.post(
+                WECOM_SEND_MESSAGE_URL,
+                params={"access_token": token},
+                json=payload,
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        if data.get("errcode") != 0:
+            raise RuntimeError(f"企业微信发消息失败: {data.get('errmsg') or data}")
+        return data
+
+
+def build_passive_text_reply(to_user: str, from_user: str, content: str) -> str:
+    timestamp = int(time.time())
+    return (
+        "<xml>"
+        f"<ToUserName><![CDATA[{to_user}]]></ToUserName>"
+        f"<FromUserName><![CDATA[{from_user}]]></FromUserName>"
+        f"<CreateTime>{timestamp}</CreateTime>"
+        "<MsgType><![CDATA[text]]></MsgType>"
+        f"<Content><![CDATA[{content}]]></Content>"
+        "</xml>"
+    )

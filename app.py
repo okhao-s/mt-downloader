@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import requests
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -33,6 +33,7 @@ from core import (
     save_config,
     should_hint_bilibili_cookies,
 )
+from wecom import WeComClient, WeComCrypto
 
 app = FastAPI(title="M3U8 Downloader")
 BASE_DIR = Path(__file__).parent
@@ -56,6 +57,76 @@ jobs: list[dict] = []
 jobs_lock = threading.Lock()
 MAX_CONCURRENT_DOWNLOADS = 3
 download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="mt-download")
+
+
+def mask_secret(value: str | None, keep: int = 3) -> str:
+    raw = str(value or "")
+    if not raw:
+        return ""
+    if len(raw) <= keep * 2:
+        return "*" * len(raw)
+    return f"{raw[:keep]}***{raw[-keep:]}"
+
+
+def is_wecom_ready(cfg: dict) -> bool:
+    return bool(
+        cfg.get("wecom_enabled")
+        and cfg.get("wecom_corp_id")
+        and cfg.get("wecom_agent_id")
+        and cfg.get("wecom_secret")
+        and cfg.get("wecom_token")
+        and cfg.get("wecom_encoding_aes_key")
+    )
+
+
+def get_wecom_crypto(cfg: dict) -> WeComCrypto:
+    if not is_wecom_ready(cfg):
+        raise ValueError("企业微信配置不完整或未启用")
+    return WeComCrypto(
+        token=str(cfg.get("wecom_token") or ""),
+        encoding_aes_key=str(cfg.get("wecom_encoding_aes_key") or ""),
+        corp_id=str(cfg.get("wecom_corp_id") or ""),
+    )
+
+
+def get_wecom_client(cfg: dict) -> WeComClient:
+    if not is_wecom_ready(cfg):
+        raise ValueError("企业微信配置不完整或未启用")
+    return WeComClient(
+        corp_id=str(cfg.get("wecom_corp_id") or ""),
+        agent_id=str(cfg.get("wecom_agent_id") or "0"),
+        secret=str(cfg.get("wecom_secret") or ""),
+    )
+
+
+def send_wecom_text_async(to_user: str, content: str):
+    def worker():
+        try:
+            cfg = load_config()
+            client = get_wecom_client(cfg)
+            client.send_text(to_user, content)
+        except Exception as exc:
+            print(f"[wecom] send_text failed: {exc}")
+
+    threading.Thread(target=worker, name=f"wecom-msg-{uuid4().hex[:6]}", daemon=True).start()
+
+
+def handle_wecom_download_message(msg: dict):
+    from_user = str(msg.get("FromUserName") or "").strip()
+    content = str(msg.get("Content") or "").strip()
+    if not from_user:
+        return
+    url = normalize_input_url(content)
+    if not url or not re.search(r"https?://", url, re.IGNORECASE):
+        send_wecom_text_async(from_user, "没识别到可下载链接。直接发文本链接就行，我会自动接单。")
+        return
+    send_wecom_text_async(from_user, f"已接单，正在解析并创建下载任务：{url}")
+    try:
+        payload = DownloadPayload(url=url)
+        job = create_download_job(payload)
+        send_wecom_text_async(from_user, f"任务已创建：{job.get('output') or job.get('id')}\n状态：{job.get('status_text') or 'queued'}")
+    except Exception as exc:
+        send_wecom_text_async(from_user, f"任务创建失败：{exc}")
 
 
 def iso_now() -> str:
@@ -281,6 +352,13 @@ class ConfigPayload(BaseModel):
     youtube_cookies_path: str | None = None
     bilibili_cookies_path: str | None = None
     douyin_cookies_path: str | None = None
+    wecom_enabled: bool = False
+    wecom_corp_id: str | None = ""
+    wecom_agent_id: str | None = ""
+    wecom_secret: str | None = ""
+    wecom_token: str | None = ""
+    wecom_encoding_aes_key: str | None = ""
+    wecom_callback_url: str | None = ""
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -794,6 +872,10 @@ def get_config():
     cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
     cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
+    cfg["wecom_ready"] = is_wecom_ready(cfg)
+    cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
+    cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
+    cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
     return cfg
 
 
@@ -812,6 +894,13 @@ def set_config(payload: ConfigPayload):
     cfg["youtube_cookies_path"] = cfg["youtubeck"]
     cfg["bilibili_cookies_path"] = cfg["bilibilick"]
     cfg["douyin_cookies_path"] = cfg["douyinck"]
+    cfg["wecom_enabled"] = bool(payload.wecom_enabled)
+    cfg["wecom_corp_id"] = str(payload.wecom_corp_id or cfg.get("wecom_corp_id") or "").strip()
+    cfg["wecom_agent_id"] = str(payload.wecom_agent_id or cfg.get("wecom_agent_id") or "").strip()
+    cfg["wecom_secret"] = str(payload.wecom_secret or cfg.get("wecom_secret") or "").strip()
+    cfg["wecom_token"] = str(payload.wecom_token or cfg.get("wecom_token") or "").strip()
+    cfg["wecom_encoding_aes_key"] = str(payload.wecom_encoding_aes_key or cfg.get("wecom_encoding_aes_key") or "").strip()
+    cfg["wecom_callback_url"] = str(payload.wecom_callback_url or cfg.get("wecom_callback_url") or "").strip()
     save_config(cfg)
     cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
@@ -821,7 +910,45 @@ def set_config(payload: ConfigPayload):
     cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
     cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
+    cfg["wecom_ready"] = is_wecom_ready(cfg)
+    cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
+    cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
+    cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
     return cfg
+
+
+@app.get("/api/wecom/callback")
+def wecom_callback_verify(msg_signature: str = "", timestamp: str = "", nonce: str = "", echostr: str = ""):
+    cfg = load_config()
+    try:
+        crypto = get_wecom_crypto(cfg)
+        plain = crypto.decrypt_echostr(msg_signature, timestamp, nonce, echostr)
+        return PlainTextResponse(content=plain)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail=f"企业微信 URL 校验失败：{exc}")
+
+
+@app.post("/api/wecom/callback")
+async def wecom_callback_receive(request: Request, msg_signature: str = "", timestamp: str = "", nonce: str = ""):
+    cfg = load_config()
+    body = await request.body()
+    try:
+        crypto = get_wecom_crypto(cfg)
+        msg = crypto.decrypt_message_xml(body.decode("utf-8"), msg_signature, timestamp, nonce)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail=f"企业微信消息解密失败：{exc}")
+
+    msg_type = str(msg.get("MsgType") or "").strip().lower()
+    event = str(msg.get("Event") or "").strip().lower()
+
+    if msg_type == "text":
+        threading.Thread(target=handle_wecom_download_message, args=(msg,), name=f"wecom-job-{uuid4().hex[:6]}", daemon=True).start()
+    elif msg_type == "event":
+        print(f"[wecom] event received: {event}")
+    else:
+        print(f"[wecom] unsupported msg type: {msg_type}")
+
+    return PlainTextResponse(content="success")
 
 
 @app.post("/api/upload/twitter-cookies")

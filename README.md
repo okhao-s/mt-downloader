@@ -246,6 +246,95 @@ docker run -d \
 
 ---
 
+
+## 企业微信自建应用回调（新增）
+
+已新增回调地址：
+
+```text
+/api/wecom/callback
+```
+
+支持能力：
+
+- `GET /api/wecom/callback`：企业微信 URL 校验（`echostr` 解密回显）
+- `POST /api/wecom/callback`：接收加密 XML 消息
+- 当前第一版只处理 `MsgType=text`
+- 文本里自动提取第一个 `http/https` 链接
+- 复用现有下载主链创建任务
+- 回调请求快速返回 `success`，避免企业微信超时
+- 异步通过企业微信应用消息主动回文本：至少会回“已接单 / 已创建任务 / 创建失败”
+
+### 配置方式
+
+优先支持两种：
+
+1. 环境变量
+2. `/app/data/config.json`
+
+需要的配置项：
+
+- `wecom_enabled`
+- `wecom_corp_id`
+- `wecom_agent_id`
+- `wecom_secret`
+- `wecom_token`
+- `wecom_encoding_aes_key`
+- `wecom_callback_url`
+
+等价环境变量：
+
+- `WECOM_CORP_ID`
+- `WECOM_AGENT_ID`
+- `WECOM_SECRET`
+- `WECOM_TOKEN`
+- `WECOM_ENCODING_AES_KEY`
+- `WECOM_CALLBACK_URL`
+
+### compose 示例
+
+```yaml
+services:
+  m3u8-downloader:
+    image: okhao/mt:latest
+    ports:
+      - "9151:8080"
+    volumes:
+      - /root/docker/video:/downloads
+      - ./data:/app/data
+    environment:
+      WECOM_CORP_ID: ${WECOM_CORP_ID}
+      WECOM_AGENT_ID: ${WECOM_AGENT_ID}
+      WECOM_SECRET: ${WECOM_SECRET}
+      WECOM_TOKEN: ${WECOM_TOKEN}
+      WECOM_ENCODING_AES_KEY: ${WECOM_ENCODING_AES_KEY}
+      WECOM_CALLBACK_URL: http://82.158.91.5:3029/api/wecom/callback
+```
+
+### config.json 示例
+
+```json
+{
+  "wecom_enabled": true,
+  "wecom_corp_id": "your-corp-id",
+  "wecom_agent_id": "1000002",
+  "wecom_secret": "your-secret",
+  "wecom_token": "your-token",
+  "wecom_encoding_aes_key": "your-encoding-aes-key",
+  "wecom_callback_url": "http://82.158.91.5:3029/api/wecom/callback"
+}
+```
+
+### 联调说明
+
+企业微信自建应用里把回调 URL 配成：
+
+```text
+http://82.158.91.5:3029/api/wecom/callback
+```
+
+消息里直接发链接即可。当前版本不会把视频文件主动回传企业微信，只会回文本状态。
+
 ## 本地开发注意事项
 
 这里有个非常容易踩的坑：
