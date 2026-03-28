@@ -43,6 +43,7 @@ TWITTER_COOKIES_PATH = COOKIES_DIR / "twitter.cookies.txt"
 YOUTUBE_COOKIES_PATH = COOKIES_DIR / "youtube.cookies.txt"
 BILIBILI_COOKIES_PATH = COOKIES_DIR / "bilibili.cookies.txt"
 DOUYIN_COOKIES_PATH = COOKIES_DIR / "douyin.cookies.txt"
+DOUYIN_FRESH_COOKIES_PATH = COOKIES_DIR / "douyin.fresh.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -176,8 +177,12 @@ def extract_first_url(text: str | None) -> str:
 
 
 def normalize_input_url(text: str | None) -> str:
-    candidate = extract_first_url(text)
-    return candidate.strip()
+    candidate = extract_first_url(text).strip()
+    if not candidate:
+        return candidate
+    if is_douyin_url(candidate) and "v.douyin.com/" in candidate:
+        return candidate
+    return candidate
 
 
 def schedule_retry(job_id: str, delay_seconds: int):
@@ -203,7 +208,11 @@ def should_use_site_cookies(target_url: str | None, cookies_path: str | None) ->
 
 
 def resolve_download_mode(platform: str, stream_url: str | None) -> str:
-    if platform in {"youtube", "bilibili", "douyin"}:
+    if platform in {"youtube", "bilibili"}:
+        return "ytdlp"
+    if platform == "douyin":
+        if stream_url and not is_m3u8_url(stream_url):
+            return "direct"
         return "ytdlp"
     if platform == "x" and not stream_url:
         return "ytdlp"
@@ -304,7 +313,18 @@ def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
     if is_bilibili_url(url):
         return cfg.get('bilibilick') or cfg.get('bilibili_cookies_path') or str(BILIBILI_COOKIES_PATH)
     if is_douyin_url(url):
-        return cfg.get('douyinck') or cfg.get('douyin_cookies_path') or str(DOUYIN_COOKIES_PATH)
+        configured = cfg.get('douyinck') or cfg.get('douyin_cookies_path') or str(DOUYIN_COOKIES_PATH)
+        fresh_path = DOUYIN_FRESH_COOKIES_PATH
+        configured_path = Path(str(configured))
+        if fresh_path.exists():
+            if not configured_path.exists():
+                return str(fresh_path)
+            try:
+                if fresh_path.stat().st_mtime >= configured_path.stat().st_mtime:
+                    return str(fresh_path)
+            except Exception:
+                return str(fresh_path)
+        return str(configured_path)
     return cfg.get('xck') or cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
 
 
@@ -331,6 +351,8 @@ def parse_url(payload: ParsePayload):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
             if get_platform(input_url) == "bilibili" and should_hint_bilibili_cookies(detail):
                 detail += "\n建议：上传有效的 Bilibili cookies.txt 后重试（当前大概率被 412 风控拦了）"
+        if get_platform(input_url) == "douyin" and "fresh cookies" in detail.lower():
+            detail += "\n建议：重新在浏览器打开目标抖音链接，过完风控/验证码后，立刻导出最新 cookies.txt 覆盖 /app/data/cookies/douyin.fresh.cookies.txt 再重试"
         raise HTTPException(status_code=404, detail=detail)
     chosen_stream = choose_stream_url(info, payload.stream_url, payload.stream_index)
     preview_parts = [f"url={quote(input_url, safe='')}" ]

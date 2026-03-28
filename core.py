@@ -94,7 +94,19 @@ def detect_platform(url: Optional[str]) -> str:
         return "youtube"
     if "bilibili.com/" in value or "b23.tv/" in value:
         return "bilibili"
-    if "douyin.com/" in value or "iesdouyin.com/" in value or "v.douyin.com/" in value:
+    if any(token in value for token in [
+        "douyin.com/",
+        "iesdouyin.com/",
+        "v.douyin.com/",
+        "aweme.snssdk.com/aweme/v1/play",
+        "/aweme/v1/play/",
+        "/aweme/v1/playwm/",
+        "douyinvod.com/",
+        ".zjcdn.com/",
+        "douyincdn.com/",
+        "byteimg.com/",
+        "douyinpic.com/",
+    ]):
         return "douyin"
     return "generic"
 
@@ -233,11 +245,15 @@ def extract_m3u8_from_html(html: str):
 def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> str:
     headers = build_headers(referer, user_agent)
     proxies = build_proxies(proxy)
-    resp = requests.get(url, headers=headers, proxies=proxies, timeout=30)
-    resp.raise_for_status()
-    html = resp.text or ""
-    if html.strip():
-        return html
+    html = ""
+    try:
+        resp = requests.get(url, headers=headers, proxies=proxies, timeout=(10, 30))
+        resp.raise_for_status()
+        html = resp.text or ""
+        if html.strip():
+            return html
+    except Exception:
+        pass
 
     cmd = ["curl", "-L", "--max-time", "30"]
     if user_agent:
