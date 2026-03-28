@@ -187,6 +187,47 @@
             <input id="bilibili_cookies_file" type="file" accept=".txt,text/plain">
             <small id="bilibili-cookies-hint" class="field-hint">未上传 cookies，Bilibili 可能会返回 412 或拿不到视频流。</small>
           </label>
+
+          <div class="settings-section-title field-wide">企业微信接入</div>
+
+          <label class="field field-wide">
+            <span>启用企业微信</span>
+            <input id="cfg_wecom_enabled" type="checkbox">
+            <small id="wecom-status-hint" class="field-hint">企业微信配置未完成。把参数填完整后再保存。</small>
+          </label>
+
+          <label class="field">
+            <span>CorpID</span>
+            <input id="cfg_wecom_corp_id" placeholder="wwxxxxxxxxxxxxxxxx">
+          </label>
+
+          <label class="field">
+            <span>AgentID</span>
+            <input id="cfg_wecom_agent_id" placeholder="1000002">
+          </label>
+
+          <label class="field field-wide">
+            <span>Secret</span>
+            <input id="cfg_wecom_secret" type="password" placeholder="保存时写入；留空并保存可清空">
+            <small id="wecom-secret-hint" class="field-hint">未保存。Secret 只在保存时写入，接口返回会做掩码。</small>
+          </label>
+
+          <label class="field field-wide">
+            <span>Token</span>
+            <input id="cfg_wecom_token" type="password" placeholder="保存时写入；留空并保存可清空">
+            <small id="wecom-token-hint" class="field-hint">未保存。Token 只在保存时写入，接口返回会做掩码。</small>
+          </label>
+
+          <label class="field field-wide">
+            <span>EncodingAESKey</span>
+            <input id="cfg_wecom_encoding_aes_key" type="password" placeholder="43 位；保存时写入；留空并保存可清空">
+            <small id="wecom-aes-hint" class="field-hint">未保存。EncodingAESKey 只在保存时写入，接口返回会做掩码。</small>
+          </label>
+
+          <label class="field field-wide">
+            <span>Callback URL（可选保存）</span>
+            <input id="cfg_wecom_callback_url" placeholder="https://你的域名/api/wecom/callback">
+          </label>
         </div>
         <div class="action-row">
           <button class="btn btn-secondary" onclick="saveConfig()">保存设置</button>

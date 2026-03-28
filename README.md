@@ -265,14 +265,11 @@ docker run -d \
 - 回调请求快速返回 `success`，避免企业微信超时
 - 异步通过企业微信应用消息主动回文本：至少会回“已接单 / 已创建任务 / 创建失败”
 
-### 配置方式
+### 配置方式（现在推荐）
 
-优先支持两种：
+企业微信参数不要写进镜像，也不要在 README 里放真实值。
 
-1. 环境变量
-2. `/app/data/config.json`
-
-需要的配置项：
+推荐直接在 Web 设置页里填写并保存这些字段：
 
 - `wecom_enabled`
 - `wecom_corp_id`
@@ -282,16 +279,13 @@ docker run -d \
 - `wecom_encoding_aes_key`
 - `wecom_callback_url`
 
-等价环境变量：
+设置页会这样处理敏感字段：
 
-- `WECOM_CORP_ID`
-- `WECOM_AGENT_ID`
-- `WECOM_SECRET`
-- `WECOM_TOKEN`
-- `WECOM_ENCODING_AES_KEY`
-- `WECOM_CALLBACK_URL`
+- `Secret / Token / EncodingAESKey` 只在保存时写入
+- `GET /api/config` 返回的是 masked 信息，不会回明文
+- 想清空敏感字段时，留空后保存即可
 
-### compose 示例
+### docker-compose 示例
 
 ```yaml
 services:
@@ -302,35 +296,29 @@ services:
     volumes:
       - /root/docker/video:/downloads
       - ./data:/app/data
-    environment:
-      WECOM_CORP_ID: ${WECOM_CORP_ID}
-      WECOM_AGENT_ID: ${WECOM_AGENT_ID}
-      WECOM_SECRET: ${WECOM_SECRET}
-      WECOM_TOKEN: ${WECOM_TOKEN}
-      WECOM_ENCODING_AES_KEY: ${WECOM_ENCODING_AES_KEY}
-      WECOM_CALLBACK_URL: http://82.158.91.5:3029/api/wecom/callback
+    restart: unless-stopped
 ```
 
-### config.json 示例
+### config.json 字段示例
 
 ```json
 {
   "wecom_enabled": true,
-  "wecom_corp_id": "your-corp-id",
-  "wecom_agent_id": "1000002",
-  "wecom_secret": "your-secret",
-  "wecom_token": "your-token",
-  "wecom_encoding_aes_key": "your-encoding-aes-key",
-  "wecom_callback_url": "http://82.158.91.5:3029/api/wecom/callback"
+  "wecom_corp_id": "你的 CorpID",
+  "wecom_agent_id": "你的 AgentID",
+  "wecom_secret": "在设置页填写",
+  "wecom_token": "在设置页填写",
+  "wecom_encoding_aes_key": "在设置页填写",
+  "wecom_callback_url": "https://你的域名/api/wecom/callback"
 }
 ```
 
 ### 联调说明
 
-企业微信自建应用里把回调 URL 配成：
+企业微信自建应用里把回调 URL 配成你自己的实际地址，例如：
 
 ```text
-http://82.158.91.5:3029/api/wecom/callback
+https://你的域名/api/wecom/callback
 ```
 
 消息里直接发链接即可。当前版本不会把视频文件主动回传企业微信，只会回文本状态。

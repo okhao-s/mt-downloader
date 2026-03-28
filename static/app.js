@@ -168,6 +168,7 @@ function showConfigSummary(data) {
     { label: '默认代理', value: data?.default_proxy || '未设置' },
     { label: '自动重试', value: data?.auto_retry_enabled ? '已开启' : '未开启' },
     { label: '重试策略', value: `${data?.auto_retry_max_attempts ?? 2} 次 / ${data?.auto_retry_delay_seconds ?? 30}s` },
+    { label: '企业微信', value: data?.wecom_ready ? '配置已就绪' : (data?.wecom_enabled ? '已开启，但参数还没填完整' : '未启用') },
   ]);
 }
 
@@ -198,6 +199,36 @@ function updateBilibiliCookiesHint(data = {}) {
     : `未上传 cookies，Bilibili 可能触发 412 或拿不到视频流。建议上传浏览器导出的 cookies.txt。`;
 }
 
+function updateWecomHints(data = {}) {
+  const status = $('wecom-status-hint');
+  if (status) {
+    status.textContent = data?.wecom_ready
+      ? '企业微信配置已就绪，可以去企业微信里校验回调并开始收消息。'
+      : '企业微信配置未完成。把参数填完整后再保存。';
+  }
+
+  const secretHint = $('wecom-secret-hint');
+  if (secretHint) {
+    secretHint.textContent = data?.wecom_secret_masked
+      ? `已保存：${data.wecom_secret_masked}。留空并保存可清空。`
+      : '未保存。Secret 只在保存时写入，接口返回会做掩码。';
+  }
+
+  const tokenHint = $('wecom-token-hint');
+  if (tokenHint) {
+    tokenHint.textContent = data?.wecom_token_masked
+      ? `已保存：${data.wecom_token_masked}。留空并保存可清空。`
+      : '未保存。Token 只在保存时写入，接口返回会做掩码。';
+  }
+
+  const aesHint = $('wecom-aes-hint');
+  if (aesHint) {
+    aesHint.textContent = data?.wecom_encoding_aes_key_masked
+      ? `已保存：${data.wecom_encoding_aes_key_masked}。留空并保存可清空。`
+      : '未保存。EncodingAESKey 只在保存时写入，接口返回会做掩码。';
+  }
+}
+
 function applyConfigToForm(data = {}) {
   $('cfg_proxy').value = data?.default_proxy || '';
   $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
@@ -212,9 +243,31 @@ function applyConfigToForm(data = {}) {
   if ($('cfg_bilibilick')) {
     $('cfg_bilibilick').value = data?.bilibilick || data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
   }
+  if ($('cfg_wecom_enabled')) {
+    $('cfg_wecom_enabled').checked = Boolean(data?.wecom_enabled);
+  }
+  if ($('cfg_wecom_corp_id')) {
+    $('cfg_wecom_corp_id').value = data?.wecom_corp_id || '';
+  }
+  if ($('cfg_wecom_agent_id')) {
+    $('cfg_wecom_agent_id').value = data?.wecom_agent_id || '';
+  }
+  if ($('cfg_wecom_secret')) {
+    $('cfg_wecom_secret').value = '';
+  }
+  if ($('cfg_wecom_token')) {
+    $('cfg_wecom_token').value = '';
+  }
+  if ($('cfg_wecom_encoding_aes_key')) {
+    $('cfg_wecom_encoding_aes_key').value = '';
+  }
+  if ($('cfg_wecom_callback_url')) {
+    $('cfg_wecom_callback_url').value = data?.wecom_callback_url || '';
+  }
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
   updateBilibiliCookiesHint(data);
+  updateWecomHints(data);
 }
 
 async function loadConfig() {
@@ -558,6 +611,13 @@ async function saveConfig() {
       xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
       bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
+      wecom_enabled: Boolean($('cfg_wecom_enabled')?.checked),
+      wecom_corp_id: $('cfg_wecom_corp_id')?.value.trim() || '',
+      wecom_agent_id: $('cfg_wecom_agent_id')?.value.trim() || '',
+      wecom_secret: $('cfg_wecom_secret')?.value.trim() || '',
+      wecom_token: $('cfg_wecom_token')?.value.trim() || '',
+      wecom_encoding_aes_key: $('cfg_wecom_encoding_aes_key')?.value.trim() || '',
+      wecom_callback_url: $('cfg_wecom_callback_url')?.value.trim() || '',
     });
     applyConfigToForm(data);
     showConfigSummary(data);

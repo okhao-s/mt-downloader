@@ -895,12 +895,12 @@ def set_config(payload: ConfigPayload):
     cfg["bilibili_cookies_path"] = cfg["bilibilick"]
     cfg["douyin_cookies_path"] = cfg["douyinck"]
     cfg["wecom_enabled"] = bool(payload.wecom_enabled)
-    cfg["wecom_corp_id"] = str(payload.wecom_corp_id or cfg.get("wecom_corp_id") or "").strip()
-    cfg["wecom_agent_id"] = str(payload.wecom_agent_id or cfg.get("wecom_agent_id") or "").strip()
-    cfg["wecom_secret"] = str(payload.wecom_secret or cfg.get("wecom_secret") or "").strip()
-    cfg["wecom_token"] = str(payload.wecom_token or cfg.get("wecom_token") or "").strip()
-    cfg["wecom_encoding_aes_key"] = str(payload.wecom_encoding_aes_key or cfg.get("wecom_encoding_aes_key") or "").strip()
-    cfg["wecom_callback_url"] = str(payload.wecom_callback_url or cfg.get("wecom_callback_url") or "").strip()
+    cfg["wecom_corp_id"] = str(payload.wecom_corp_id or "").strip()
+    cfg["wecom_agent_id"] = str(payload.wecom_agent_id or "").strip()
+    cfg["wecom_secret"] = str(payload.wecom_secret or "").strip()
+    cfg["wecom_token"] = str(payload.wecom_token or "").strip()
+    cfg["wecom_encoding_aes_key"] = str(payload.wecom_encoding_aes_key or "").strip()
+    cfg["wecom_callback_url"] = str(payload.wecom_callback_url or "").strip()
     save_config(cfg)
     cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
