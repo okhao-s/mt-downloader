@@ -1,7 +1,7 @@
 # mt-downloader
 
 轻量、实用、能落地的视频下载面板。  
-专注把 **m3u8 / HLS、X(Twitter)、YouTube、Bilibili** 这几类常见场景稳定做好，不把项目做成什么都想支持、最后什么都半残的“万能下载器”。
+专注把 **m3u8 / HLS、X(Twitter)、YouTube、Bilibili、Douyin(抖音)** 这几类常见场景稳定做好，不把项目做成什么都想支持、最后什么都半残的“万能下载器”。
 
 ---
 
@@ -11,6 +11,7 @@
 - 支持 **X / Twitter** 视频解析与下载
 - 支持 **YouTube** 轻量下载
 - 支持 **Bilibili** 视频解析与下载
+- 支持 **Douyin / 抖音** 视频解析与下载
 - 支持 **cookies 上传**（X / YouTube / Bilibili 分开管理）
 - 支持 **任务队列、重试、历史记录**
 - 支持 **中文简洁下载进度**
@@ -19,6 +20,7 @@
   - `/downloads/x`
   - `/downloads/youtube`
   - `/downloads/bilibili`
+  - `/downloads/douyin`
 
 ---
 
@@ -59,6 +61,14 @@
 - 支持独立的 Bilibili `cookies.txt`
 - 下载结果单独落到 `/downloads/bilibili`
 
+### Douyin / 抖音
+
+- 当前优先走 **移动分享页源码解析**，不依赖 PC Web detail 空接口
+- 从 `iesdouyin / m.douyin` 分享页源码提取 `video_id / play_addr`
+- 优先使用 `/aweme/v1/play/` 直链，必要时回退 `/playwm/`
+- 下载阶段继续复用 `yt-dlp` 下载直链，不额外引入重型浏览器依赖
+- 下载结果单独落到 `/downloads/douyin`
+
 ---
 
 ## 设计思路
@@ -69,6 +79,7 @@
 - **X / Twitter** → X 专用旁路 / fallback
 - **YouTube** → `yt-dlp` 专线
 - **Bilibili** → 独立站点分流
+- **Douyin / 抖音** → 移动分享页源码解析 + `yt-dlp` 直链下载
 
 这么做就一个原因：
 

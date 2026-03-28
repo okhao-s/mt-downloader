@@ -26,12 +26,15 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     xck = cfg.get("xck") or cfg.get("twitter_cookies_path") or "/app/data/cookies/twitter.cookies.txt"
     youtubeck = cfg.get("youtubeck") or cfg.get("youtube_cookies_path") or "/app/data/cookies/youtube.cookies.txt"
     bilibilick = cfg.get("bilibilick") or cfg.get("bilibili_cookies_path") or "/app/data/cookies/bilibili.cookies.txt"
+    douyinck = cfg.get("douyinck") or cfg.get("douyin_cookies_path") or "/app/data/cookies/douyin.cookies.txt"
     cfg["xck"] = xck
     cfg["youtubeck"] = youtubeck
     cfg["bilibilick"] = bilibilick
+    cfg["douyinck"] = douyinck
     cfg["twitter_cookies_path"] = xck
     cfg["youtube_cookies_path"] = youtubeck
     cfg["bilibili_cookies_path"] = bilibilick
+    cfg["douyin_cookies_path"] = douyinck
     return cfg
 
 
@@ -49,6 +52,7 @@ def load_config() -> dict:
         "xck": "/app/data/cookies/twitter.cookies.txt",
         "youtubeck": "/app/data/cookies/youtube.cookies.txt",
         "bilibilick": "/app/data/cookies/bilibili.cookies.txt",
+        "douyinck": "/app/data/cookies/douyin.cookies.txt",
     })
 
 
@@ -90,11 +94,13 @@ def detect_platform(url: Optional[str]) -> str:
         return "youtube"
     if "bilibili.com/" in value or "b23.tv/" in value:
         return "bilibili"
+    if "douyin.com/" in value or "iesdouyin.com/" in value or "v.douyin.com/" in value:
+        return "douyin"
     return "generic"
 
 
 def prefers_best_stream(url: Optional[str]) -> bool:
-    return detect_platform(url) in {"x", "youtube", "bilibili"}
+    return detect_platform(url) in {"x", "youtube", "bilibili", "douyin"}
 
 
 def dedupe_keep_order(items: list[str]) -> list[str]:
@@ -277,12 +283,49 @@ def extract_twitter_fallback_streams(html: str) -> list[str]:
     return dedupe_keep_order(cleaned)
 
 
+def extract_douyin_share_streams(html: str) -> tuple[list[str], list[dict]]:
+    found = []
+    options = []
+    for match in re.finditer(r'"play_addr"\s*:\s*\{.*?"url_list"\s*:\s*\[(.*?)\]', html, re.IGNORECASE | re.DOTALL):
+        block = match.group(1)
+        urls = re.findall(r'"(https:\\u002F\\u002F[^"]+)"', block)
+        for raw in urls:
+            playwm = raw.replace('\\u002F', '/').replace('\\u0026', '&')
+            play = playwm.replace('/playwm/', '/play/')
+            for candidate, source in [(play, 'douyin-mobile-play'), (playwm, 'douyin-mobile-playwm')]:
+                if candidate not in found:
+                    found.append(candidate)
+                    options.append(build_stream_option(candidate, source=source))
+    return dedupe_keep_order(found), dedupe_stream_options(options)
+
+
+def normalize_douyin_share_url(url: str) -> str:
+    match = re.search(r'/video/(\d+)', url)
+    if match:
+        return f'https://www.iesdouyin.com/share/video/{match.group(1)}/'
+    modal = re.search(r'[?&]modal_id=(\d+)', url)
+    if modal:
+        return f'https://www.iesdouyin.com/share/video/{modal.group(1)}/'
+    return url
+
+
 def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> dict:
-    html = fetch_webpage_html(url, referer, user_agent, proxy)
+    effective_ua = user_agent
+    effective_url = url
+    if detect_platform(url) == 'douyin':
+        effective_url = normalize_douyin_share_url(url)
+        if not effective_ua:
+            effective_ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+    html = fetch_webpage_html(effective_url, referer, effective_ua, proxy)
     streams = extract_m3u8_from_html(html)
+    stream_options = [{"url": s, "source": "html"} for s in streams]
+    if detect_platform(url) == 'douyin':
+        dy_streams, dy_options = extract_douyin_share_streams(html)
+        streams = dedupe_keep_order(streams + dy_streams)
+        stream_options = dedupe_stream_options(stream_options + dy_options)
     return {
         "streams": streams,
-        "stream_options": [{"url": s, "source": "html"} for s in streams],
+        "stream_options": stream_options,
         "title": extract_title_from_html(html),
     }
 
@@ -711,6 +754,29 @@ def extract_bilibili_streams(meta: dict) -> tuple[list[str], list[dict]]:
     return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
+def extract_douyin_streams(meta: dict) -> tuple[list[str], list[dict]]:
+    streams = []
+    options = []
+    for fmt in meta.get('formats', []) or []:
+        fmt_url = fmt.get('url')
+        if not isinstance(fmt_url, str):
+            continue
+        vcodec = str(fmt.get('vcodec') or 'none')
+        if vcodec == 'none':
+            continue
+        width = fmt.get('width')
+        height = fmt.get('height')
+        ext = str(fmt.get('ext') or '')
+        protocol = str(fmt.get('protocol') or '')
+        if not width and not height and '.m3u8' not in fmt_url:
+            continue
+        if ext not in {'mp4', 'flv', 'm4v', 'webm'} and '.m3u8' not in fmt_url and protocol not in {'https', 'http', 'm3u8_native', 'm3u8'}:
+            continue
+        streams.append(fmt_url)
+        options.append(build_stream_option(fmt_url, fmt, source='yt-dlp-douyin'))
+    return dedupe_keep_order(streams), dedupe_stream_options(options)
+
+
 def extract_generic_ytdlp_streams(meta: dict) -> tuple[list[str], list[dict]]:
     streams = []
     options = []
@@ -742,6 +808,12 @@ def extract_platform_streams(platform: str, meta: dict) -> tuple[list[str], list
         if isinstance(direct, str) and direct and direct not in streams:
             streams.append(direct)
             options.append(build_stream_option(direct, meta, source="yt-dlp-bilibili-direct"))
+        return dedupe_keep_order(streams), dedupe_stream_options(options)
+    if platform == "douyin":
+        streams, options = extract_douyin_streams(meta)
+        if isinstance(direct, str) and direct and direct not in streams:
+            streams.append(direct)
+            options.append(build_stream_option(direct, meta, source="yt-dlp-douyin-direct"))
         return dedupe_keep_order(streams), dedupe_stream_options(options)
     return extract_generic_ytdlp_streams(meta)
 

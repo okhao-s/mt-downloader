@@ -41,6 +41,7 @@ COOKIES_DIR = DATA_DIR / "cookies"
 TWITTER_COOKIES_PATH = COOKIES_DIR / "twitter.cookies.txt"
 YOUTUBE_COOKIES_PATH = COOKIES_DIR / "youtube.cookies.txt"
 BILIBILI_COOKIES_PATH = COOKIES_DIR / "bilibili.cookies.txt"
+DOUYIN_COOKIES_PATH = COOKIES_DIR / "douyin.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -115,6 +116,8 @@ def get_download_subdir(url: str | None = None) -> Path:
         target = base_dir / "youtube"
     elif is_bilibili_url(url):
         target = base_dir / "bilibili"
+    elif is_douyin_url(url):
+        target = base_dir / "douyin"
     elif is_x_url(url):
         target = base_dir / "x"
     else:
@@ -179,11 +182,11 @@ def schedule_retry(job_id: str, delay_seconds: int):
 
 
 def should_use_site_cookies(target_url: str | None, cookies_path: str | None) -> bool:
-    return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili"})
+    return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili", "douyin"})
 
 
 def resolve_download_mode(platform: str, stream_url: str | None) -> str:
-    if platform in {"youtube", "bilibili"}:
+    if platform in {"youtube", "bilibili", "douyin"}:
         return "ytdlp"
     if platform == "x" and not stream_url:
         return "ytdlp"
@@ -242,9 +245,11 @@ class ConfigPayload(BaseModel):
     xck: str | None = str(TWITTER_COOKIES_PATH)
     youtubeck: str | None = str(YOUTUBE_COOKIES_PATH)
     bilibilick: str | None = str(BILIBILI_COOKIES_PATH)
+    douyinck: str | None = str(DOUYIN_COOKIES_PATH)
     twitter_cookies_path: str | None = None
     youtube_cookies_path: str | None = None
     bilibili_cookies_path: str | None = None
+    douyin_cookies_path: str | None = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -270,6 +275,10 @@ def is_bilibili_url(url: str | None) -> bool:
     return get_platform(url) == "bilibili"
 
 
+def is_douyin_url(url: str | None) -> bool:
+    return get_platform(url) == "douyin"
+
+
 def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
     if is_x_url(url):
         return cfg.get('xck') or cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
@@ -277,6 +286,8 @@ def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
         return cfg.get('youtubeck') or cfg.get('youtube_cookies_path') or str(YOUTUBE_COOKIES_PATH)
     if is_bilibili_url(url):
         return cfg.get('bilibilick') or cfg.get('bilibili_cookies_path') or str(BILIBILI_COOKIES_PATH)
+    if is_douyin_url(url):
+        return cfg.get('douyinck') or cfg.get('douyin_cookies_path') or str(DOUYIN_COOKIES_PATH)
     return cfg.get('xck') or cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
 
 
@@ -326,7 +337,12 @@ def direct_download(
     should_cancel=None,
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    headers = build_headers(referer, user_agent)
+    effective_user_agent = user_agent
+    effective_referer = referer
+    if get_platform(target_url) == "douyin":
+        effective_user_agent = effective_user_agent or "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        effective_referer = effective_referer or "https://www.iesdouyin.com/"
+    headers = build_headers(effective_referer, effective_user_agent)
     proxies = build_proxies(proxy)
     with requests.get(target_url, headers=headers, proxies=proxies, timeout=60, stream=True) as resp:
         resp.raise_for_status()
@@ -461,7 +477,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     x_url = platform == "x"
     youtube_url = platform == "youtube"
     bilibili_url = platform == "bilibili"
-    use_ytdlp_fallback = (not stream_url and x_url) or youtube_url or bilibili_url
+    use_ytdlp_fallback = (not stream_url and x_url) or youtube_url or bilibili_url or platform == "douyin"
     if not stream_url and not use_ytdlp_fallback:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
 
@@ -710,15 +726,19 @@ def get_config():
     cfg.setdefault("xck", cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH))
     cfg.setdefault("youtubeck", cfg.get("youtube_cookies_path") or str(YOUTUBE_COOKIES_PATH))
     cfg.setdefault("bilibilick", cfg.get("bilibili_cookies_path") or str(BILIBILI_COOKIES_PATH))
+    cfg.setdefault("douyinck", cfg.get("douyin_cookies_path") or str(DOUYIN_COOKIES_PATH))
     cfg["twitter_cookies_path"] = cfg.get("xck") or str(TWITTER_COOKIES_PATH)
     cfg["youtube_cookies_path"] = cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
     cfg["bilibili_cookies_path"] = cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
+    cfg["douyin_cookies_path"] = cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
     cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
     cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
+    cfg["douyinck_exists"] = Path(str(cfg.get("douyinck") or DOUYIN_COOKIES_PATH)).exists()
     cfg["twitter_cookies_exists"] = cfg["xck_exists"]
     cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
+    cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
     return cfg
 
 
@@ -732,16 +752,20 @@ def set_config(payload: ConfigPayload):
     cfg["xck"] = payload.xck or payload.twitter_cookies_path or cfg.get("xck") or str(TWITTER_COOKIES_PATH)
     cfg["youtubeck"] = payload.youtubeck or payload.youtube_cookies_path or cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
     cfg["bilibilick"] = payload.bilibilick or payload.bilibili_cookies_path or cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
+    cfg["douyinck"] = payload.douyinck or payload.douyin_cookies_path or cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
     cfg["twitter_cookies_path"] = cfg["xck"]
     cfg["youtube_cookies_path"] = cfg["youtubeck"]
     cfg["bilibili_cookies_path"] = cfg["bilibilick"]
+    cfg["douyin_cookies_path"] = cfg["douyinck"]
     save_config(cfg)
     cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
     cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
+    cfg["douyinck_exists"] = Path(str(cfg.get("douyinck") or DOUYIN_COOKIES_PATH)).exists()
     cfg["twitter_cookies_exists"] = cfg["xck_exists"]
     cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
+    cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
     return cfg
 
 
