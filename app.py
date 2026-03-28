@@ -33,7 +33,7 @@ from core import (
     save_config,
     should_hint_bilibili_cookies,
 )
-from wecom import WeComClient, WeComCrypto
+from wecom import WeComClient, WeComCrypto, build_passive_text_reply
 
 app = FastAPI(title="M3U8 Downloader")
 BASE_DIR = Path(__file__).parent
@@ -107,9 +107,10 @@ def send_wecom_text_async(to_user: str, content: str):
         try:
             cfg = load_config()
             client = get_wecom_client(cfg)
-            client.send_text(to_user, content)
+            result = client.send_text(to_user, content)
+            print(f"[wecom] send_text ok: to={to_user} msgid={result.get('msgid')}")
         except Exception as exc:
-            print(f"[wecom] send_text failed: {exc}")
+            print(f"[wecom] send_text failed: to={to_user} error={exc}")
 
     threading.Thread(target=worker, name=f"wecom-msg-{uuid4().hex[:6]}", daemon=True).start()
 
@@ -133,6 +134,11 @@ def prettify_platform(platform: str | None) -> str:
 def build_wecom_route_feedback(url: str, platform: str) -> str:
     prefix = build_wecom_prefix(platform)
     return f"{prefix} 已识别链接，开始解析并创建任务：\n{url}"
+
+
+def build_wecom_passive_ack(url: str, platform: str) -> str:
+    prefix = build_wecom_prefix(platform)
+    return f"{prefix} 已收到链接，正在创建任务，请稍等。\n{url}"
 
 
 def build_wecom_job_created_feedback(job: dict) -> str:
@@ -1061,7 +1067,16 @@ async def wecom_callback_receive(request: Request, msg_signature: str = "", time
     event = str(msg.get("Event") or "").strip().lower()
 
     if msg_type == "text":
+        from_user = str(msg.get("FromUserName") or "").strip()
+        to_user = str(msg.get("ToUserName") or "").strip()
+        content = str(msg.get("Content") or "").strip()
+        url = normalize_input_url(content)
+        platform = get_platform(url) if url and re.search(r"https?://", url, re.IGNORECASE) else "generic"
+        ack = build_wecom_passive_ack(url, platform) if url and re.search(r"https?://", url, re.IGNORECASE) else "没识别到可下载链接。直接发文本链接就行，我会自动接单。"
         threading.Thread(target=handle_wecom_download_message, args=(msg,), name=f"wecom-job-{uuid4().hex[:6]}", daemon=True).start()
+        passive_plain = build_passive_text_reply(to_user=from_user, from_user=to_user, content=ack)
+        encrypted = crypto.encrypt(passive_plain, nonce=nonce, timestamp=timestamp)
+        return Response(content=encrypted["xml"], media_type="application/xml")
     elif msg_type == "event":
         print(f"[wecom] event received: {event}")
     else:
