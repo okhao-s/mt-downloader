@@ -254,7 +254,7 @@ function resetPlayer() {
 }
 
 function syncSuggestedFilename(data) {
-  const nextAutoName = data?.title ? `${data.title}.mp4` : '';
+  const nextAutoName = String(data?.suggested_output || '').trim();
   if (!nextAutoName) {
     dom.output.value = '';
     state.autoFilledOutput = '';

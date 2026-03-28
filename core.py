@@ -307,12 +307,35 @@ def extract_douyin_share_streams(html: str) -> tuple[list[str], list[dict]]:
         urls = re.findall(r'"(https:\\u002F\\u002F[^"]+)"', block)
         for raw in urls:
             playwm = raw.replace('\\u002F', '/').replace('\\u0026', '&')
-            play = playwm.replace('/playwm/', '/play/')
-            for candidate, source in [(play, 'douyin-mobile-play'), (playwm, 'douyin-mobile-playwm')]:
-                if candidate not in found:
-                    found.append(candidate)
-                    options.append(build_stream_option(candidate, source=source))
+            play = playwm.replace('/playwm/', '/play/') if '/playwm/' in playwm else playwm
+            preferred = play or playwm
+            source = 'douyin-mobile-play' if preferred == play else 'douyin-mobile-playwm'
+            if preferred and preferred not in found:
+                found.append(preferred)
+                options.append(build_stream_option(preferred, source=source))
     return dedupe_keep_order(found), dedupe_stream_options(options)
+
+
+def extract_douyin_title_from_html(html: str) -> Optional[str]:
+    patterns = [
+        r'"desc"\s*:\s*"((?:\\.|[^"\\])+)"',
+        r'"share_info"\s*:\s*\{.*?"share_desc"\s*:\s*"((?:\\.|[^"\\])+)"',
+    ]
+
+    def clean_text(raw: str) -> str:
+        try:
+            text = json.loads(f'"{raw}"')
+        except Exception:
+            text = raw.encode('utf-8', 'ignore').decode('unicode_escape', 'ignore')
+        text = re.sub(r'\s+', ' ', str(text or '')).strip()
+        return text
+
+    for pat in patterns:
+        for match in re.findall(pat, html, re.IGNORECASE | re.DOTALL):
+            title = clean_text(match)
+            if title:
+                return title
+    return None
 
 
 def normalize_douyin_share_url(url: str) -> str:
@@ -328,21 +351,24 @@ def normalize_douyin_share_url(url: str) -> str:
 def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> dict:
     effective_ua = user_agent
     effective_url = url
-    if detect_platform(url) == 'douyin':
+    is_douyin = detect_platform(url) == 'douyin'
+    if is_douyin:
         effective_url = normalize_douyin_share_url(url)
         if not effective_ua:
             effective_ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
     html = fetch_webpage_html(effective_url, referer, effective_ua, proxy)
     streams = extract_m3u8_from_html(html)
     stream_options = [{"url": s, "source": "html"} for s in streams]
-    if detect_platform(url) == 'douyin':
+    title = extract_title_from_html(html)
+    if is_douyin:
         dy_streams, dy_options = extract_douyin_share_streams(html)
         streams = dedupe_keep_order(streams + dy_streams)
         stream_options = dedupe_stream_options(stream_options + dy_options)
+        title = extract_douyin_title_from_html(html) or title
     return {
         "streams": streams,
         "stream_options": stream_options,
-        "title": extract_title_from_html(html),
+        "title": title,
     }
 
 
@@ -1221,10 +1247,35 @@ def aggressive_hls_download(
 
 
 def normalize_filename(name: str) -> str:
-    name = (name or "").strip() or "output.mp4"
-    name = re.sub(r"[\\/:*?\"<>|]+", "_", name)
-    name = re.sub(r"\s+", " ", name).strip(" .")
-    return name if name.lower().endswith(".mp4") else f"{name}.mp4"
+    raw = str(name or "").strip()
+    if not raw:
+        return "output.mp4"
+
+    candidate = raw.replace("\u3000", " ")
+    candidate = re.sub(r"\s+", " ", candidate).strip()
+
+    suffix_match = re.search(r"(\.[A-Za-z0-9]{1,10})\s*$", candidate)
+    suffix = suffix_match.group(1).lower() if suffix_match else ".mp4"
+    stem = candidate[:-len(suffix)].strip() if suffix_match else candidate
+
+    suffix = re.sub(r"[^A-Za-z0-9.]", "", suffix or "")
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix or ""):
+        suffix = ".mp4"
+
+    stem = re.sub(r"[\\/:*?\"<>|\x00-\x1f]+", "_", stem)
+    stem = re.sub(r"\s+", " ", stem)
+    stem = re.sub(r"_+", "_", stem)
+    stem = stem.strip(" ._")
+    stem = re.sub(r"\.{2,}", ".", stem)
+
+    max_stem_length = 120
+    if len(stem) > max_stem_length:
+        stem = stem[:max_stem_length].rstrip(" ._")
+
+    if not stem:
+        stem = "output"
+
+    return f"{stem}{suffix.lower()}"
 
 
 def build_media_proxy_url(proxy_prefix: str, target_url: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None) -> str:

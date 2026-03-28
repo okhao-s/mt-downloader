@@ -154,6 +154,11 @@ def allocate_output_name(suggested_name: str, download_dir: Path | None = None) 
     return final_name
 
 
+def build_suggested_output_name(display_title: str | None, fallback_prefix: str = "video") -> str:
+    base_name = (display_title or "").strip() or f"{fallback_prefix}-{uuid4().hex[:8]}"
+    return normalize_filename(base_name)
+
+
 def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int = 60):
     headers = build_headers(referer, user_agent)
     proxies = build_proxies(proxy)
@@ -366,6 +371,8 @@ def parse_url(payload: ParsePayload):
         preview_parts.append(f"proxy={quote(proxy, safe='')}")
     info["preview_url"] = "/api/preview.m3u8?" + "&".join(preview_parts)
     info["stream_count"] = len(info.get("streams") or [])
+    fallback_prefix = get_platform(input_url) or "video"
+    info["suggested_output"] = build_suggested_output_name(info.get("title"), fallback_prefix=fallback_prefix)
     return info
 
 
