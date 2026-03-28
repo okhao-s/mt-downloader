@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import time
 import warnings
@@ -163,6 +164,22 @@ def safe_requests_get(target: str, referer: str | None = None, user_agent: str |
             return requests.get(target, headers=headers, proxies=proxies, timeout=timeout, verify=False)
 
 
+def extract_first_url(text: str | None) -> str:
+    value = str(text or '').strip()
+    if not value:
+        return ''
+    match = re.search(r'https?://[^\s\u3000]+', value)
+    if not match:
+        return value
+    candidate = match.group(0).strip().rstrip('，。；;,.!?！？”"”’\')）】>')
+    return candidate
+
+
+def normalize_input_url(text: str | None) -> str:
+    candidate = extract_first_url(text)
+    return candidate.strip()
+
+
 def schedule_retry(job_id: str, delay_seconds: int):
     delay_seconds = max(1, int(delay_seconds or 0))
 
@@ -295,9 +312,12 @@ def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
 def parse_url(payload: ParsePayload):
     cfg = load_config()
     proxy = payload.proxy or cfg.get("default_proxy") or None
-    cookies_path = resolve_site_cookies_path(payload.url, cfg)
+    input_url = normalize_input_url(payload.url)
+    if not input_url:
+        raise HTTPException(status_code=400, detail="请提供有效链接")
+    cookies_path = resolve_site_cookies_path(input_url, cfg)
     info = discover_stream(
-        payload.url,
+        input_url,
         payload.referer,
         payload.user_agent,
         proxy,
@@ -309,11 +329,11 @@ def parse_url(payload: ParsePayload):
         detail = "未解析到可下载视频"
         if info.get("errors"):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
-            if get_platform(payload.url) == "bilibili" and should_hint_bilibili_cookies(detail):
+            if get_platform(input_url) == "bilibili" and should_hint_bilibili_cookies(detail):
                 detail += "\n建议：上传有效的 Bilibili cookies.txt 后重试（当前大概率被 412 风控拦了）"
         raise HTTPException(status_code=404, detail=detail)
     chosen_stream = choose_stream_url(info, payload.stream_url, payload.stream_index)
-    preview_parts = [f"url={quote(payload.url, safe='')}" ]
+    preview_parts = [f"url={quote(input_url, safe='')}" ]
     if chosen_stream:
         preview_parts.append(f"stream_url={quote(chosen_stream, safe='')}")
     if payload.referer:
@@ -447,10 +467,13 @@ def run_download_job(
 def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     cfg = load_config()
     proxy = payload.proxy or cfg.get("default_proxy") or None
+    input_url = normalize_input_url(payload.url)
+    if not input_url:
+        raise HTTPException(status_code=400, detail="请提供有效链接")
     if payload.stream_url:
         selected_is_m3u8 = is_m3u8_url(payload.stream_url)
         info = {
-            "source_url": payload.url,
+            "source_url": input_url,
             "resolved_url": payload.stream_url,
             "title": None,
             "thumbnail": None,
@@ -460,9 +483,9 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             "stream_options": [],
         }
     else:
-        cookies_path = resolve_site_cookies_path(payload.url, cfg)
+        cookies_path = resolve_site_cookies_path(input_url, cfg)
         info = discover_stream(
-            payload.url,
+            input_url,
             payload.referer,
             payload.user_agent,
             proxy,
@@ -470,10 +493,10 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             payload.stream_index,
             cookies_path,
         )
-    download_dir = get_download_subdir(payload.url)
+    download_dir = get_download_subdir(input_url)
     stream_url = payload.stream_url or choose_stream_url(info, payload.stream_url, payload.stream_index)
     extractor = str(info.get("extractor") or "")
-    platform = get_platform(payload.url)
+    platform = get_platform(input_url)
     x_url = platform == "x"
     youtube_url = platform == "youtube"
     bilibili_url = platform == "bilibili"
@@ -486,7 +509,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     output_path = download_dir / output_name
 
     resp_url = build_preview_url(
-        payload.url,
+        input_url,
         stream_url,
         payload.referer,
         payload.user_agent,
@@ -511,7 +534,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     now = iso_now()
     job = {
         "id": uuid4().hex[:10],
-        "source_url": payload.url,
+        "source_url": input_url,
         "stream_url": stream_url,
         "stream_index": payload.stream_index,
         "output": output_name,
@@ -585,9 +608,12 @@ def download(request: Request, payload: DownloadPayload):
 def download_all(request: Request, payload: BatchDownloadPayload):
     cfg = load_config()
     proxy = payload.proxy or cfg.get("default_proxy") or None
-    cookies_path = resolve_site_cookies_path(payload.url, cfg)
+    input_url = normalize_input_url(payload.url)
+    if not input_url:
+        raise HTTPException(status_code=400, detail="请提供有效链接")
+    cookies_path = resolve_site_cookies_path(input_url, cfg)
     info = discover_stream(
-        payload.url,
+        input_url,
         payload.referer,
         payload.user_agent,
         proxy,
