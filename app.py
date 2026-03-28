@@ -160,7 +160,7 @@ def build_wecom_passive_ack(url: str, platform: str) -> str:
 def build_wecom_job_created_feedback(job: dict) -> str:
     prefix = build_wecom_prefix(job.get("platform"))
     filename = resolve_job_display_name(job)
-    return f"{prefix} 已收到链接，正在创建任务：{filename}"
+    return f"{prefix} 任务创建成功：{filename}"
 
 
 def build_wecom_job_completion_feedback(job: dict) -> str:
@@ -183,6 +183,18 @@ def build_wecom_job_completion_feedback(job: dict) -> str:
         error = str(job.get("error") or job.get("status_text") or "未知原因").strip()
         lines.append(f"原因：{error[:180]}")
     return "\n".join(lines)
+
+
+def notify_wecom_job_created(job: dict):
+    to_user = str(job.get("wecom_to_user") or "").strip()
+    if not to_user:
+        return
+    if job.get("wecom_created_notified"):
+        return
+    sent = update_job(job.get("id"), wecom_created_notified=True, wecom_created_notified_at=iso_now())
+    if not sent:
+        return
+    send_wecom_text_async(to_user, build_wecom_job_created_feedback(sent.copy()))
 
 
 def notify_wecom_job_completion(job: dict):
@@ -212,10 +224,7 @@ def handle_wecom_download_message(msg: dict):
     platform = get_platform(url)
     try:
         payload = DownloadPayload(url=url, wecom_to_user=from_user)
-        job = create_download_job(payload)
-        with jobs_lock:
-            current_job = next((item.copy() for item in jobs if item.get("id") == job.get("id")), job.copy())
-        send_wecom_text_async(from_user, build_wecom_job_created_feedback(current_job))
+        create_download_job(payload)
     except Exception as exc:
         send_wecom_text_async(from_user, f"{build_wecom_prefix(platform)} 任务创建失败：{exc}")
 
@@ -230,20 +239,26 @@ def add_job(job: dict):
 
 
 def update_job(job_id: str, **updates):
-    notify_job = None
+    notify_created_job = None
+    notify_completion_job = None
     with jobs_lock:
         for job in jobs:
             if job.get("id") == job_id:
                 updates.setdefault("updated_at", iso_now())
                 job.update(updates)
-                if str(job.get("status") or "").strip().lower() in WECOM_FINAL_STATUSES and job.get("wecom_to_user") and not job.get("wecom_completion_notified"):
-                    notify_job = job.copy()
+                status = str(job.get("status") or "").strip().lower()
+                if status == "queued" and job.get("wecom_to_user") and not job.get("wecom_created_notified"):
+                    notify_created_job = job.copy()
+                if status in WECOM_FINAL_STATUSES and job.get("wecom_to_user") and not job.get("wecom_completion_notified"):
+                    notify_completion_job = job.copy()
                 result = job
                 break
         else:
             return None
-    if notify_job:
-        notify_wecom_job_completion(notify_job)
+    if notify_created_job:
+        notify_wecom_job_created(notify_created_job)
+    if notify_completion_job:
+        notify_wecom_job_completion(notify_completion_job)
     return result
 
 
@@ -764,10 +779,14 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "extractor": extractor,
         "request_payload": payload.model_dump(),
         "wecom_to_user": str(payload.wecom_to_user or "").strip(),
+        "wecom_created_notified": False,
+        "wecom_created_notified_at": None,
         "wecom_completion_notified": False,
         "wecom_completion_notified_at": None,
     }
     add_job(job)
+    if job.get("wecom_to_user"):
+        notify_wecom_job_created(job.copy())
 
     download_executor.submit(
         run_download_job,
