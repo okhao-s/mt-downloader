@@ -114,6 +114,10 @@ def send_wecom_text_async(to_user: str, content: str):
     threading.Thread(target=worker, name=f"wecom-msg-{uuid4().hex[:6]}", daemon=True).start()
 
 
+def build_wecom_prefix(platform: str | None) -> str:
+    return f"[{prettify_platform(platform)}]"
+
+
 def prettify_platform(platform: str | None) -> str:
     mapping = {
         "douyin": "Douyin",
@@ -127,38 +131,35 @@ def prettify_platform(platform: str | None) -> str:
 
 
 def build_wecom_route_feedback(url: str, platform: str) -> str:
-    platform_name = prettify_platform(platform)
-    if platform == "douyin":
-        return f"已识别为 {platform_name} 任务，开始解析并入队：\n{url}"
-    if platform in {"youtube", "bilibili", "x"}:
-        return f"已识别为 {platform_name} 任务，开始解析并准备创建下载任务：\n{url}"
-    return f"已识别到下载链接，按 {platform_name} 链路开始解析：\n{url}"
+    prefix = build_wecom_prefix(platform)
+    return f"{prefix} 已识别链接，开始解析并创建任务：\n{url}"
 
 
 def build_wecom_job_created_feedback(job: dict) -> str:
-    platform_name = prettify_platform(job.get("platform"))
+    prefix = build_wecom_prefix(job.get("platform"))
     title = str(job.get("title") or job.get("output") or "").strip()
     lines = [
-        f"{platform_name} 任务已创建并入队",
+        f"{prefix} 任务已创建并入队",
         f"任务ID：{job.get('id')}",
     ]
     if title:
         lines.append(f"标题：{title}")
-    lines.append(f"文件：{job.get('output')}")
+    if job.get("output"):
+        lines.append(f"文件：{job.get('output')}")
     lines.append(f"状态：{job.get('status_text') or '排队中'}")
     return "\n".join(lines)
 
 
 def build_wecom_job_completion_feedback(job: dict) -> str:
     status = str(job.get("status") or "").strip().lower()
-    platform_name = prettify_platform(job.get("platform"))
+    prefix = build_wecom_prefix(job.get("platform"))
     title = str(job.get("title") or job.get("output") or "").strip()
     status_label = {
         "done": "下载完成",
         "failed": "下载失败",
         "cancelled": "任务已取消",
     }.get(status, f"任务状态：{status or 'unknown'}")
-    lines = [status_label, f"平台：{platform_name}"]
+    lines = [f"{prefix} {status_label}"]
     if title:
         lines.append(f"标题：{title}")
     if job.get("output"):
@@ -171,6 +172,21 @@ def build_wecom_job_completion_feedback(job: dict) -> str:
     return "\n".join(lines)
 
 
+def notify_wecom_job_completion(job: dict):
+    status = str(job.get("status") or "").strip().lower()
+    if status not in WECOM_FINAL_STATUSES:
+        return
+    to_user = str(job.get("wecom_to_user") or "").strip()
+    if not to_user:
+        return
+    if job.get("wecom_completion_notified"):
+        return
+    sent = update_job(job.get("id"), wecom_completion_notified=True, wecom_completion_notified_at=iso_now())
+    if not sent:
+        return
+    send_wecom_text_async(to_user, build_wecom_job_completion_feedback(sent.copy()))
+
+
 def watch_wecom_job(job_id: str, to_user: str):
     def worker():
         try:
@@ -179,8 +195,11 @@ def watch_wecom_job(job_id: str, to_user: str):
                     job = next((item.copy() for item in jobs if item.get("id") == job_id), None)
                 if not job:
                     return
+                if not job.get("wecom_to_user"):
+                    update_job(job_id, wecom_to_user=to_user)
+                    job["wecom_to_user"] = to_user
                 if str(job.get("status") or "").strip().lower() in WECOM_FINAL_STATUSES:
-                    send_wecom_text_async(to_user, build_wecom_job_completion_feedback(job))
+                    notify_wecom_job_completion(job)
                     return
                 time.sleep(2)
         finally:
@@ -205,14 +224,16 @@ def handle_wecom_download_message(msg: dict):
         send_wecom_text_async(from_user, "没识别到可下载链接。直接发文本链接就行，我会自动接单。")
         return
     platform = get_platform(url)
-    send_wecom_text_async(from_user, build_wecom_route_feedback(url, platform))
     try:
         payload = DownloadPayload(url=url)
         job = create_download_job(payload)
-        send_wecom_text_async(from_user, build_wecom_job_created_feedback(job))
+        update_job(str(job.get("id") or ""), wecom_to_user=from_user)
+        with jobs_lock:
+            current_job = next((item.copy() for item in jobs if item.get("id") == job.get("id")), job.copy())
+        send_wecom_text_async(from_user, "\n".join([build_wecom_route_feedback(url, platform), build_wecom_job_created_feedback(current_job)]))
         watch_wecom_job(str(job.get("id") or ""), from_user)
     except Exception as exc:
-        send_wecom_text_async(from_user, f"{prettify_platform(platform)} 任务创建失败：{exc}")
+        send_wecom_text_async(from_user, f"{build_wecom_prefix(platform)} 任务创建失败：{exc}")
 
 
 def iso_now() -> str:
@@ -225,13 +246,21 @@ def add_job(job: dict):
 
 
 def update_job(job_id: str, **updates):
+    notify_job = None
     with jobs_lock:
         for job in jobs:
             if job.get("id") == job_id:
                 updates.setdefault("updated_at", iso_now())
                 job.update(updates)
-                return job
-    return None
+                if str(job.get("status") or "").strip().lower() in WECOM_FINAL_STATUSES and job.get("wecom_to_user") and not job.get("wecom_completion_notified"):
+                    notify_job = job.copy()
+                result = job
+                break
+        else:
+            return None
+    if notify_job:
+        notify_wecom_job_completion(notify_job)
+    return result
 
 
 def list_recent_jobs(limit: int = 50):
@@ -749,6 +778,9 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "download_via": download_via,
         "extractor": extractor,
         "request_payload": payload.model_dump(),
+        "wecom_to_user": "",
+        "wecom_completion_notified": False,
+        "wecom_completion_notified_at": None,
     }
     add_job(job)
 
