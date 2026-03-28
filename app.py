@@ -57,6 +57,9 @@ jobs: list[dict] = []
 jobs_lock = threading.Lock()
 MAX_CONCURRENT_DOWNLOADS = 3
 download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="mt-download")
+wecom_job_watchers: set[str] = set()
+wecom_job_watchers_lock = threading.Lock()
+WECOM_FINAL_STATUSES = {"done", "failed", "cancelled"}
 
 
 def mask_secret(value: str | None, keep: int = 3) -> str:
@@ -111,6 +114,87 @@ def send_wecom_text_async(to_user: str, content: str):
     threading.Thread(target=worker, name=f"wecom-msg-{uuid4().hex[:6]}", daemon=True).start()
 
 
+def prettify_platform(platform: str | None) -> str:
+    mapping = {
+        "douyin": "Douyin",
+        "youtube": "YouTube",
+        "bilibili": "Bilibili",
+        "x": "X/Twitter",
+        "generic": "通用链接",
+    }
+    key = str(platform or "generic").strip().lower()
+    return mapping.get(key, key or "通用链接")
+
+
+def build_wecom_route_feedback(url: str, platform: str) -> str:
+    platform_name = prettify_platform(platform)
+    if platform == "douyin":
+        return f"已识别为 {platform_name} 任务，开始解析并入队：\n{url}"
+    if platform in {"youtube", "bilibili", "x"}:
+        return f"已识别为 {platform_name} 任务，开始解析并准备创建下载任务：\n{url}"
+    return f"已识别到下载链接，按 {platform_name} 链路开始解析：\n{url}"
+
+
+def build_wecom_job_created_feedback(job: dict) -> str:
+    platform_name = prettify_platform(job.get("platform"))
+    title = str(job.get("title") or job.get("output") or "").strip()
+    lines = [
+        f"{platform_name} 任务已创建并入队",
+        f"任务ID：{job.get('id')}",
+    ]
+    if title:
+        lines.append(f"标题：{title}")
+    lines.append(f"文件：{job.get('output')}")
+    lines.append(f"状态：{job.get('status_text') or '排队中'}")
+    return "\n".join(lines)
+
+
+def build_wecom_job_completion_feedback(job: dict) -> str:
+    status = str(job.get("status") or "").strip().lower()
+    platform_name = prettify_platform(job.get("platform"))
+    title = str(job.get("title") or job.get("output") or "").strip()
+    status_label = {
+        "done": "下载完成",
+        "failed": "下载失败",
+        "cancelled": "任务已取消",
+    }.get(status, f"任务状态：{status or 'unknown'}")
+    lines = [status_label, f"平台：{platform_name}"]
+    if title:
+        lines.append(f"标题：{title}")
+    if job.get("output"):
+        lines.append(f"文件：{job.get('output')}")
+    if job.get("id"):
+        lines.append(f"任务ID：{job.get('id')}")
+    if status == "failed":
+        error = str(job.get("error") or job.get("status_text") or "未知原因").strip()
+        lines.append(f"原因：{error[:180]}")
+    return "\n".join(lines)
+
+
+def watch_wecom_job(job_id: str, to_user: str):
+    def worker():
+        try:
+            while True:
+                with jobs_lock:
+                    job = next((item.copy() for item in jobs if item.get("id") == job_id), None)
+                if not job:
+                    return
+                if str(job.get("status") or "").strip().lower() in WECOM_FINAL_STATUSES:
+                    send_wecom_text_async(to_user, build_wecom_job_completion_feedback(job))
+                    return
+                time.sleep(2)
+        finally:
+            with wecom_job_watchers_lock:
+                wecom_job_watchers.discard(job_id)
+
+    with wecom_job_watchers_lock:
+        if job_id in wecom_job_watchers:
+            return
+        wecom_job_watchers.add(job_id)
+    threading.Thread(target=worker, name=f"wecom-watch-{job_id}", daemon=True).start()
+
+
+
 def handle_wecom_download_message(msg: dict):
     from_user = str(msg.get("FromUserName") or "").strip()
     content = str(msg.get("Content") or "").strip()
@@ -120,13 +204,15 @@ def handle_wecom_download_message(msg: dict):
     if not url or not re.search(r"https?://", url, re.IGNORECASE):
         send_wecom_text_async(from_user, "没识别到可下载链接。直接发文本链接就行，我会自动接单。")
         return
-    send_wecom_text_async(from_user, f"已接单，正在解析并创建下载任务：{url}")
+    platform = get_platform(url)
+    send_wecom_text_async(from_user, build_wecom_route_feedback(url, platform))
     try:
         payload = DownloadPayload(url=url)
         job = create_download_job(payload)
-        send_wecom_text_async(from_user, f"任务已创建：{job.get('output') or job.get('id')}\n状态：{job.get('status_text') or 'queued'}")
+        send_wecom_text_async(from_user, build_wecom_job_created_feedback(job))
+        watch_wecom_job(str(job.get("id") or ""), from_user)
     except Exception as exc:
-        send_wecom_text_async(from_user, f"任务创建失败：{exc}")
+        send_wecom_text_async(from_user, f"{prettify_platform(platform)} 任务创建失败：{exc}")
 
 
 def iso_now() -> str:
@@ -655,6 +741,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "status_text": f"排队中 · 当前下载槽位 {active_now}/{MAX_CONCURRENT_DOWNLOADS}" + (f"，前面还有 {queued_ahead} 个任务" if queued_ahead else ""),
         "progress": 0,
         "title": info.get("title"),
+        "platform": platform,
         "error": "",
         "retry_count": retry_count,
         "retry_of": retry_of or "",
