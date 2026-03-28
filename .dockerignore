@@ -1,0 +1,37 @@
+.git
+.gitignore
+.dockerignore
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# local runtime data / secrets
+.env
+.env.*
+!.env.example
+data/
+/downloads/
+/tmp/
+/temp/
+*.log
+*.pid
+
+# local editor / OS junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# test/cache artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# docs / repo-only files not needed in runtime image
+LICENSE
+README.md
+docker-compose.yml
