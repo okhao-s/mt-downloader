@@ -1,7 +1,13 @@
 services:
   m3u8-downloader:
     container_name: Mt
-    image: okhao/mt:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        APP_COMMIT: ${APP_COMMIT:-unknown}
+    image: okhao/mt:local
     ports:
       - "9151:8080"
     volumes:

@@ -603,6 +603,9 @@ async function downloadVideo() {
 async function saveConfig() {
   try {
     setStatus('保存设置…', 'loading');
+    const wecomSecretInput = $('cfg_wecom_secret')?.value.trim();
+    const wecomTokenInput = $('cfg_wecom_token')?.value.trim();
+    const wecomAesInput = $('cfg_wecom_encoding_aes_key')?.value.trim();
     const data = await api('/api/config', {
       default_proxy: $('cfg_proxy').value.trim(),
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
@@ -614,9 +617,9 @@ async function saveConfig() {
       wecom_enabled: Boolean($('cfg_wecom_enabled')?.checked),
       wecom_corp_id: $('cfg_wecom_corp_id')?.value.trim() || '',
       wecom_agent_id: $('cfg_wecom_agent_id')?.value.trim() || '',
-      wecom_secret: $('cfg_wecom_secret')?.value.trim() || '',
-      wecom_token: $('cfg_wecom_token')?.value.trim() || '',
-      wecom_encoding_aes_key: $('cfg_wecom_encoding_aes_key')?.value.trim() || '',
+      wecom_secret: wecomSecretInput === '' ? '__KEEP__' : wecomSecretInput,
+      wecom_token: wecomTokenInput === '' ? '__KEEP__' : wecomTokenInput,
+      wecom_encoding_aes_key: wecomAesInput === '' ? '__KEEP__' : wecomAesInput,
       wecom_callback_url: $('cfg_wecom_callback_url')?.value.trim() || '',
     });
     applyConfigToForm(data);

@@ -1,6 +1,5 @@
 import base64
 import hashlib
-import os
 import secrets
 import struct
 import threading
@@ -42,6 +41,15 @@ def _sha1_signature(token: str, timestamp: str, nonce: str, encrypted: str) -> s
 def _xml_text(root: ET.Element, tag: str) -> str:
     value = root.findtext(tag)
     return str(value or "").strip()
+
+
+def _mask_wecom_value(value: str | None, head: int = 3, tail: int = 3) -> str:
+    raw = str(value or "")
+    if not raw:
+        return ""
+    if len(raw) <= head + tail:
+        return "*" * len(raw)
+    return f"{raw[:head]}***{raw[-tail:]}"
 
 
 class WeComCrypto:
@@ -125,19 +133,30 @@ class WeComClient:
         self._lock = threading.Lock()
 
     def _fetch_access_token(self) -> str:
-        resp = requests.get(
-            WECOM_TOKEN_URL,
-            params={"corpid": self.corp_id, "corpsecret": self.secret},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        masked_corp = _mask_wecom_value(self.corp_id)
+        try:
+            resp = requests.get(
+                WECOM_TOKEN_URL,
+                params={"corpid": self.corp_id, "corpsecret": self.secret},
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"企业微信获取 access_token 请求失败: corp_id={masked_corp} error={exc}") from exc
+        except ValueError as exc:
+            body = (getattr(resp, "text", "") or "")[:300]
+            raise RuntimeError(f"企业微信获取 access_token 响应非 JSON: corp_id={masked_corp} body={body}") from exc
+
         if data.get("errcode") != 0:
-            raise RuntimeError(f"企业微信获取 access_token 失败: {data.get('errmsg') or data}")
+            errcode = data.get("errcode")
+            errmsg = data.get("errmsg") or data
+            raise RuntimeError(f"企业微信获取 access_token 失败: corp_id={masked_corp} errcode={errcode} errmsg={errmsg}")
+
         token = str(data.get("access_token") or "")
         expires_in = int(data.get("expires_in") or 7200)
         if not token:
-            raise RuntimeError("企业微信 access_token 为空")
+            raise RuntimeError(f"企业微信 access_token 为空: corp_id={masked_corp}")
         self._token = token
         self._token_expire_at = time.time() + max(60, expires_in - 120)
         return token
@@ -158,27 +177,36 @@ class WeComClient:
             "enable_id_trans": 0,
             "enable_duplicate_check": 0,
         }
+        masked_user = _mask_wecom_value(payload["touser"])
+
+        def do_send(access_token: str) -> dict:
+            try:
+                resp = requests.post(
+                    WECOM_SEND_MESSAGE_URL,
+                    params={"access_token": access_token},
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except requests.RequestException as exc:
+                raise RuntimeError(f"企业微信发消息请求失败: touser={masked_user} agentid={self.agent_id} error={exc}") from exc
+            except ValueError as exc:
+                body = (getattr(resp, "text", "") or "")[:300]
+                raise RuntimeError(f"企业微信发消息响应非 JSON: touser={masked_user} agentid={self.agent_id} body={body}") from exc
+
         token = self.get_access_token()
-        resp = requests.post(
-            WECOM_SEND_MESSAGE_URL,
-            params={"access_token": token},
-            json=payload,
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        data = do_send(token)
         if data.get("errcode") == 42001:
-            token = self.get_access_token(force_refresh=True)
-            resp = requests.post(
-                WECOM_SEND_MESSAGE_URL,
-                params={"access_token": token},
-                json=payload,
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            data = do_send(self.get_access_token(force_refresh=True))
+
         if data.get("errcode") != 0:
-            raise RuntimeError(f"企业微信发消息失败: {data.get('errmsg') or data}")
+            errcode = data.get("errcode")
+            errmsg = data.get("errmsg") or data
+            invalid_user_hint = " (请检查 touser 是否是企业微信可见成员/UserID)" if errcode in {60111, 81013} else ""
+            raise RuntimeError(
+                f"企业微信发消息失败: touser={masked_user} agentid={self.agent_id} errcode={errcode} errmsg={errmsg}{invalid_user_hint}"
+            )
         return data
 
 

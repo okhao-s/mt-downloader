@@ -37,6 +37,8 @@ from wecom import WeComClient, WeComCrypto, build_passive_text_reply
 
 app = FastAPI(title="M3U8 Downloader")
 BASE_DIR = Path(__file__).parent
+APP_VERSION = os.getenv("APP_VERSION", "dev").strip() or "dev"
+APP_COMMIT = os.getenv("APP_COMMIT", "unknown").strip() or "unknown"
 DOWNLOAD_DIR = Path("/downloads")
 DATA_DIR = Path("/app/data")
 COOKIES_DIR = DATA_DIR / "cookies"
@@ -58,6 +60,7 @@ jobs_lock = threading.Lock()
 MAX_CONCURRENT_DOWNLOADS = 3
 download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="mt-download")
 WECOM_FINAL_STATUSES = {"done", "failed", "cancelled"}
+CONFIG_KEEP_SENTINEL = "__KEEP__"
 
 
 def mask_secret(value: str | None, keep: int = 3) -> str:
@@ -100,13 +103,18 @@ def get_wecom_client(cfg: dict) -> WeComClient:
     )
 
 
+def send_wecom_text(to_user: str, content: str) -> dict:
+    cfg = load_config()
+    client = get_wecom_client(cfg)
+    result = client.send_text(to_user, content)
+    print(f"[wecom] send_text ok: to={to_user} msgid={result.get('msgid')}")
+    return result
+
+
 def send_wecom_text_async(to_user: str, content: str):
     def worker():
         try:
-            cfg = load_config()
-            client = get_wecom_client(cfg)
-            result = client.send_text(to_user, content)
-            print(f"[wecom] send_text ok: to={to_user} msgid={result.get('msgid')}")
+            send_wecom_text(to_user, content)
         except Exception as exc:
             print(f"[wecom] send_text failed: to={to_user} error={exc}")
 
@@ -147,14 +155,56 @@ def resolve_job_display_name(job: dict | None = None, platform: str | None = Non
     return f"{pretty} 任务"
 
 
-def build_wecom_route_feedback(url: str, platform: str) -> str:
-    prefix = build_wecom_prefix(platform)
-    return f"{prefix} 已识别链接，开始解析：{url}"
-
-
 def build_wecom_passive_ack(url: str, platform: str) -> str:
     prefix = build_wecom_prefix(platform)
     return f"{prefix} 已收到链接，正在创建任务，请稍等。"
+
+
+def enrich_config_view(cfg: dict) -> dict:
+    cfg = dict(cfg or {})
+    cfg.setdefault("xck", cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH))
+    cfg.setdefault("youtubeck", cfg.get("youtube_cookies_path") or str(YOUTUBE_COOKIES_PATH))
+    cfg.setdefault("bilibilick", cfg.get("bilibili_cookies_path") or str(BILIBILI_COOKIES_PATH))
+    cfg.setdefault("douyinck", cfg.get("douyin_cookies_path") or str(DOUYIN_COOKIES_PATH))
+    cfg["twitter_cookies_path"] = cfg.get("xck") or str(TWITTER_COOKIES_PATH)
+    cfg["youtube_cookies_path"] = cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
+    cfg["bilibili_cookies_path"] = cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
+    cfg["douyin_cookies_path"] = cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
+    cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
+    cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
+    cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
+    cfg["douyinck_exists"] = Path(str(cfg.get("douyinck") or DOUYIN_COOKIES_PATH)).exists()
+    cfg["twitter_cookies_exists"] = cfg["xck_exists"]
+    cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
+    cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
+    cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
+    cfg["wecom_ready"] = is_wecom_ready(cfg)
+    cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
+    cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
+    cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
+    return cfg
+
+
+async def save_uploaded_cookie_file(file: UploadFile, target_path: Path, config_key: str, exists_key: str) -> dict:
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="只收浏览器导出的 cookies.txt")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="cookies 文件是空的")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(content)
+
+    cfg = load_config()
+    cfg[config_key] = str(target_path)
+    save_config(cfg)
+
+    return {
+        "ok": True,
+        "path": str(target_path),
+        "size": len(content),
+        exists_key: True,
+    }
 
 
 def build_wecom_job_created_feedback(job: dict) -> str:
@@ -185,31 +235,115 @@ def build_wecom_job_completion_feedback(job: dict) -> str:
     return "\n".join(lines)
 
 
+def claim_wecom_notification(job_id: str | None, kind: str) -> dict | None:
+    if not job_id:
+        return None
+    flag_key = f"wecom_{kind}_notified"
+    inflight_key = f"wecom_{kind}_notifying"
+    with jobs_lock:
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if is_job_hidden(job):
+                return None
+            if job.get(flag_key) or job.get(inflight_key):
+                return None
+            job[inflight_key] = True
+            job.setdefault("updated_at", iso_now())
+            return job.copy()
+    return None
+
+
+def finish_wecom_notification(job_id: str | None, kind: str, success: bool):
+    if not job_id:
+        return
+    flag_key = f"wecom_{kind}_notified"
+    at_key = f"wecom_{kind}_notified_at"
+    inflight_key = f"wecom_{kind}_notifying"
+    with jobs_lock:
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            job[inflight_key] = False
+            if success:
+                job[flag_key] = True
+                job[at_key] = iso_now()
+                job["updated_at"] = iso_now()
+            return
+
+
+def get_job_snapshot(job_id: str | None) -> dict | None:
+    if not job_id:
+        return None
+    with jobs_lock:
+        for job in jobs:
+            if job.get("id") == job_id:
+                return job.copy()
+    return None
+
+
+def ensure_wecom_created_notified(job_id: str | None, wait_timeout: float = 5.0) -> bool:
+    if not job_id:
+        return False
+    deadline = time.time() + max(0.0, wait_timeout)
+    attempted_trigger = False
+    while True:
+        snapshot = get_job_snapshot(job_id)
+        if not snapshot:
+            return False
+        if snapshot.get("wecom_created_notified"):
+            return True
+        if not snapshot.get("wecom_to_user"):
+            return False
+        if not snapshot.get("wecom_created_notifying"):
+            if attempted_trigger:
+                return False
+            attempted_trigger = True
+            notify_wecom_job_created(snapshot)
+            continue
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 def notify_wecom_job_created(job: dict):
-    to_user = str(job.get("wecom_to_user") or "").strip()
+    job_id = str(job.get("id") or "").strip()
+    claimed_job = claim_wecom_notification(job_id, "created")
+    if not claimed_job:
+        return
+    to_user = str(claimed_job.get("wecom_to_user") or "").strip()
     if not to_user:
+        finish_wecom_notification(job_id, "created", success=False)
         return
-    if job.get("wecom_created_notified"):
+    try:
+        send_wecom_text(to_user, build_wecom_job_created_feedback(claimed_job.copy()))
+    except Exception as exc:
+        print(f"[wecom] job_created notify failed: job_id={job_id} to={to_user} error={exc}")
+        finish_wecom_notification(job_id, "created", success=False)
         return
-    sent = update_job(job.get("id"), wecom_created_notified=True, wecom_created_notified_at=iso_now())
-    if not sent:
-        return
-    send_wecom_text_async(to_user, build_wecom_job_created_feedback(sent.copy()))
+    finish_wecom_notification(job_id, "created", success=True)
 
 
 def notify_wecom_job_completion(job: dict):
-    status = str(job.get("status") or "").strip().lower()
+    job_id = str(job.get("id") or "").strip()
+    snapshot = get_job_snapshot(job_id) or job.copy()
+    status = str(snapshot.get("status") or "").strip().lower()
     if status not in WECOM_FINAL_STATUSES:
         return
-    to_user = str(job.get("wecom_to_user") or "").strip()
+    to_user = str(snapshot.get("wecom_to_user") or "").strip()
     if not to_user:
         return
-    if job.get("wecom_completion_notified"):
+    ensure_wecom_created_notified(job_id)
+    claimed_job = claim_wecom_notification(job_id, "completion")
+    if not claimed_job:
         return
-    sent = update_job(job.get("id"), wecom_completion_notified=True, wecom_completion_notified_at=iso_now())
-    if not sent:
+    try:
+        send_wecom_text(to_user, build_wecom_job_completion_feedback(claimed_job.copy()))
+    except Exception as exc:
+        print(f"[wecom] job_completion notify failed: job_id={job_id} status={status} to={to_user} error={exc}")
+        finish_wecom_notification(job_id, "completion", success=False)
         return
-    send_wecom_text_async(to_user, build_wecom_job_completion_feedback(sent.copy()))
+    finish_wecom_notification(job_id, "completion", success=True)
 
 
 def handle_wecom_download_message(msg: dict):
@@ -238,6 +372,10 @@ def add_job(job: dict):
         jobs.append(job)
 
 
+def is_job_hidden(job: dict) -> bool:
+    return bool(job.get("deleted"))
+
+
 def update_job(job_id: str, **updates):
     notify_created_job = None
     notify_completion_job = None
@@ -264,17 +402,18 @@ def update_job(job_id: str, **updates):
 
 def list_recent_jobs(limit: int = 50):
     with jobs_lock:
-        return list(reversed(jobs[-limit:]))
+        visible_jobs = [job for job in jobs if not is_job_hidden(job)]
+        return list(reversed(visible_jobs[-limit:]))
 
 
 def count_active_jobs() -> int:
     with jobs_lock:
-        return sum(1 for job in jobs if job.get("status") == "downloading")
+        return sum(1 for job in jobs if not is_job_hidden(job) and job.get("status") == "downloading")
 
 
 def count_queued_jobs() -> int:
     with jobs_lock:
-        return sum(1 for job in jobs if job.get("status") == "queued")
+        return sum(1 for job in jobs if not is_job_hidden(job) and job.get("status") == "queued")
 
 
 def remove_job(job_id: str):
@@ -287,7 +426,7 @@ def remove_job(job_id: str):
 
 def clear_history_jobs() -> int:
     with jobs_lock:
-        keep = [job for job in jobs if job.get("status") in {"queued", "downloading"}]
+        keep = [job for job in jobs if not is_job_hidden(job) and job.get("status") in {"queued", "downloading"}]
         removed = len(jobs) - len(keep)
         jobs[:] = keep
         return removed
@@ -470,9 +609,9 @@ class ConfigPayload(BaseModel):
     wecom_enabled: bool = False
     wecom_corp_id: str | None = ""
     wecom_agent_id: str | None = ""
-    wecom_secret: str | None = ""
-    wecom_token: str | None = ""
-    wecom_encoding_aes_key: str | None = ""
+    wecom_secret: str | None = CONFIG_KEEP_SENTINEL
+    wecom_token: str | None = CONFIG_KEEP_SENTINEL
+    wecom_encoding_aes_key: str | None = CONFIG_KEEP_SENTINEL
     wecom_callback_url: str | None = ""
 
 
@@ -623,8 +762,20 @@ def run_download_job(
     download_via: str = "hls",
     source_url: str | None = None,
 ):
+    with jobs_lock:
+        target_job = next((job for job in jobs if job.get("id") == job_id), None)
+        if not target_job:
+            print(f"[job] skip start: job missing job_id={job_id}")
+            return
+        if is_job_hidden(target_job) or target_job.get("cancel_requested"):
+            print(f"[job] skip start: job deleted/cancelled before run job_id={job_id}")
+            return
+
     active_slot = min(MAX_CONCURRENT_DOWNLOADS, count_active_jobs() + 1)
-    update_job(job_id, status="downloading", started_at=iso_now(), progress=8, status_text=f"开始下载 · 当前下载槽位 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
+    updated = update_job(job_id, status="downloading", started_at=iso_now(), progress=8, status_text=f"开始下载 · 当前下载槽位 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
+    if not updated:
+        print(f"[job] skip start: update_job missed job_id={job_id}")
+        return
 
     def on_progress(progress: int, status_text: str):
         update_job(job_id, status="downloading", progress=progress, status_text=status_text)
@@ -775,14 +926,18 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "retry_count": retry_count,
         "retry_of": retry_of or "",
         "retry_scheduled": False,
+        "deleted": False,
+        "deleted_at": None,
         "download_via": download_via,
         "extractor": extractor,
         "request_payload": payload.model_dump(),
         "wecom_to_user": str(payload.wecom_to_user or "").strip(),
         "wecom_created_notified": False,
         "wecom_created_notified_at": None,
+        "wecom_created_notifying": False,
         "wecom_completion_notified": False,
         "wecom_completion_notified_at": None,
+        "wecom_completion_notifying": False,
     }
     add_job(job)
     if job.get("wecom_to_user"):
@@ -899,11 +1054,14 @@ def list_jobs():
 def delete_job(job_id: str):
     with jobs_lock:
         target = next((job for job in jobs if job.get("id") == job_id), None)
-        if not target:
+        if not target or is_job_hidden(target):
             raise HTTPException(status_code=404, detail="任务不存在")
 
+        target["deleted"] = True
+        target["deleted_at"] = iso_now()
+        target["cancel_requested"] = True
+
         if target.get("status") == "downloading":
-            target["cancel_requested"] = True
             target["status_text"] = "已请求取消，等待任务停止…"
             return {"ok": True, "job_id": job_id, "cancelling": True}
 
@@ -978,28 +1136,12 @@ def media_proxy(name: str = "", target: str = "", referer: str | None = None, us
 
 @app.get("/api/config")
 def get_config():
-    cfg = load_config()
-    cfg.setdefault("xck", cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH))
-    cfg.setdefault("youtubeck", cfg.get("youtube_cookies_path") or str(YOUTUBE_COOKIES_PATH))
-    cfg.setdefault("bilibilick", cfg.get("bilibili_cookies_path") or str(BILIBILI_COOKIES_PATH))
-    cfg.setdefault("douyinck", cfg.get("douyin_cookies_path") or str(DOUYIN_COOKIES_PATH))
-    cfg["twitter_cookies_path"] = cfg.get("xck") or str(TWITTER_COOKIES_PATH)
-    cfg["youtube_cookies_path"] = cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
-    cfg["bilibili_cookies_path"] = cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
-    cfg["douyin_cookies_path"] = cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
-    cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
-    cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
-    cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
-    cfg["douyinck_exists"] = Path(str(cfg.get("douyinck") or DOUYIN_COOKIES_PATH)).exists()
-    cfg["twitter_cookies_exists"] = cfg["xck_exists"]
-    cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
-    cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
-    cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
-    cfg["wecom_ready"] = is_wecom_ready(cfg)
-    cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
-    cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
-    cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
-    return cfg
+    return enrich_config_view(load_config())
+
+
+@app.get("/api/version")
+def get_version():
+    return {"version": APP_VERSION, "commit": APP_COMMIT}
 
 
 @app.post("/api/config")
@@ -1020,24 +1162,20 @@ def set_config(payload: ConfigPayload):
     cfg["wecom_enabled"] = bool(payload.wecom_enabled)
     cfg["wecom_corp_id"] = str(payload.wecom_corp_id or "").strip()
     cfg["wecom_agent_id"] = str(payload.wecom_agent_id or "").strip()
-    cfg["wecom_secret"] = str(payload.wecom_secret or "").strip()
-    cfg["wecom_token"] = str(payload.wecom_token or "").strip()
-    cfg["wecom_encoding_aes_key"] = str(payload.wecom_encoding_aes_key or "").strip()
+
+    secret = str(payload.wecom_secret or "").strip()
+    token = str(payload.wecom_token or "").strip()
+    aes_key = str(payload.wecom_encoding_aes_key or "").strip()
+    if secret != CONFIG_KEEP_SENTINEL:
+        cfg["wecom_secret"] = secret
+    if token != CONFIG_KEEP_SENTINEL:
+        cfg["wecom_token"] = token
+    if aes_key != CONFIG_KEEP_SENTINEL:
+        cfg["wecom_encoding_aes_key"] = aes_key
+
     cfg["wecom_callback_url"] = str(payload.wecom_callback_url or "").strip()
     save_config(cfg)
-    cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
-    cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
-    cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
-    cfg["douyinck_exists"] = Path(str(cfg.get("douyinck") or DOUYIN_COOKIES_PATH)).exists()
-    cfg["twitter_cookies_exists"] = cfg["xck_exists"]
-    cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
-    cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
-    cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
-    cfg["wecom_ready"] = is_wecom_ready(cfg)
-    cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
-    cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
-    cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
-    return cfg
+    return enrich_config_view(cfg)
 
 
 @app.get("/api/wecom/callback")
@@ -1085,68 +1223,14 @@ async def wecom_callback_receive(request: Request, msg_signature: str = "", time
 
 @app.post("/api/upload/twitter-cookies")
 async def upload_twitter_cookies(file: UploadFile = File(...)):
-    filename = (file.filename or "").lower()
-    if not filename.endswith(".txt"):
-        raise HTTPException(status_code=400, detail="只收浏览器导出的 cookies.txt")
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="cookies 文件是空的")
-    TWITTER_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TWITTER_COOKIES_PATH.write_bytes(content)
-
-    cfg = load_config()
-    cfg["twitter_cookies_path"] = str(TWITTER_COOKIES_PATH)
-    save_config(cfg)
-
-    return {
-        "ok": True,
-        "path": str(TWITTER_COOKIES_PATH),
-        "size": len(content),
-        "twitter_cookies_exists": True,
-    }
+    return await save_uploaded_cookie_file(file, TWITTER_COOKIES_PATH, "twitter_cookies_path", "twitter_cookies_exists")
 
 
 @app.post("/api/upload/youtube-cookies")
 async def upload_youtube_cookies(file: UploadFile = File(...)):
-    filename = (file.filename or "").lower()
-    if not filename.endswith(".txt"):
-        raise HTTPException(status_code=400, detail="只收浏览器导出的 cookies.txt")
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="cookies 文件是空的")
-    YOUTUBE_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    YOUTUBE_COOKIES_PATH.write_bytes(content)
-
-    cfg = load_config()
-    cfg["youtube_cookies_path"] = str(YOUTUBE_COOKIES_PATH)
-    save_config(cfg)
-
-    return {
-        "ok": True,
-        "path": str(YOUTUBE_COOKIES_PATH),
-        "size": len(content),
-        "youtube_cookies_exists": True,
-    }
+    return await save_uploaded_cookie_file(file, YOUTUBE_COOKIES_PATH, "youtube_cookies_path", "youtube_cookies_exists")
 
 
 @app.post("/api/upload/bilibili-cookies")
 async def upload_bilibili_cookies(file: UploadFile = File(...)):
-    filename = (file.filename or "").lower()
-    if not filename.endswith(".txt"):
-        raise HTTPException(status_code=400, detail="只收浏览器导出的 cookies.txt")
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="cookies 文件是空的")
-    BILIBILI_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BILIBILI_COOKIES_PATH.write_bytes(content)
-
-    cfg = load_config()
-    cfg["bilibili_cookies_path"] = str(BILIBILI_COOKIES_PATH)
-    save_config(cfg)
-
-    return {
-        "ok": True,
-        "path": str(BILIBILI_COOKIES_PATH),
-        "size": len(content),
-        "bilibili_cookies_exists": True,
-    }
+    return await save_uploaded_cookie_file(file, BILIBILI_COOKIES_PATH, "bilibili_cookies_path", "bilibili_cookies_exists")

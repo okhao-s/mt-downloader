@@ -1,7 +1,7 @@
 import app
 
 sent = []
-app.send_wecom_text_async = lambda to_user, content: sent.append((to_user, content))
+app.send_wecom_text = lambda to_user, content: sent.append((to_user, content)) or {"msgid": str(len(sent))}
 
 # reset in-memory jobs for isolated test
 with app.jobs_lock:
@@ -34,8 +34,10 @@ job = {
     "wecom_to_user": "zhangsan",
     "wecom_created_notified": False,
     "wecom_created_notified_at": None,
+    "wecom_created_notifying": False,
     "wecom_completion_notified": False,
     "wecom_completion_notified_at": None,
+    "wecom_completion_notifying": False,
 }
 
 app.add_job(job)
