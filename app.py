@@ -538,7 +538,9 @@ def should_use_site_cookies(target_url: str | None, cookies_path: str | None) ->
 
 
 def resolve_download_mode(platform: str, stream_url: str | None) -> str:
-    if platform in {"youtube", "bilibili", "douyin"}:
+    if platform in {"youtube", "bilibili"}:
+        return "ytdlp"
+    if platform == "douyin" and not stream_url:
         return "ytdlp"
     if platform == "x" and not stream_url:
         return "ytdlp"
