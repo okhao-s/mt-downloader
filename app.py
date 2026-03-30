@@ -538,11 +538,7 @@ def should_use_site_cookies(target_url: str | None, cookies_path: str | None) ->
 
 
 def resolve_download_mode(platform: str, stream_url: str | None) -> str:
-    if platform in {"youtube", "bilibili"}:
-        return "ytdlp"
-    if platform == "douyin":
-        if stream_url and not is_m3u8_url(stream_url):
-            return "direct"
+    if platform in {"youtube", "bilibili", "douyin"}:
         return "ytdlp"
     if platform == "x" and not stream_url:
         return "ytdlp"
@@ -800,7 +796,21 @@ def run_download_job(
             download_with_ytdlp(target_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, cookies_path=cookies_path if use_cookies else None, progress_callback=on_progress, should_cancel=should_cancel, force_mp4=force_mp4)
         elif download_via == "direct":
             update_job(job_id, status="downloading", progress=8, status_text=f"开始直连下载 · 当前下载槽位 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
-            direct_download(stream_url or preview_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, progress_callback=on_progress, should_cancel=should_cancel)
+            try:
+                direct_download(stream_url or preview_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, progress_callback=on_progress, should_cancel=should_cancel)
+            except requests.HTTPError as exc:
+                target_url = source_url or stream_url or preview_url
+                response = getattr(exc, "response", None)
+                status_code = getattr(response, "status_code", None)
+                if get_platform(target_url) == "douyin" and status_code == 403:
+                    cfg = load_config()
+                    cookies_path = resolve_site_cookies_path(target_url, cfg)
+                    use_cookies = should_use_site_cookies(target_url, cookies_path)
+                    status_note = "（带 cookies）" if use_cookies else ""
+                    update_job(job_id, status="downloading", progress=6, status_text=f"抖音直链 403，已切到 yt-dlp{status_note}")
+                    download_with_ytdlp(target_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, cookies_path=cookies_path if use_cookies else None, progress_callback=on_progress, should_cancel=should_cancel)
+                else:
+                    raise
         elif aggressive and stream_url:
             try:
                 aggressive_hls_download(stream_url, output_path, referer=referer, user_agent=user_agent, proxy=proxy, progress_callback=on_progress, should_cancel=should_cancel)
