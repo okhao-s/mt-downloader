@@ -26,6 +26,7 @@ from core import (
     discover_stream,
     download_with_ytdlp,
     ffmpeg_download,
+    is_direct_media_url,
     is_m3u8_url,
     load_config,
     normalize_filename,

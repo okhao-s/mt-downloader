@@ -100,6 +100,12 @@ def is_m3u8_url(url: str) -> bool:
     return path.endswith(".m3u8") or ".m3u8?" in url.lower() or "m3u8" in path
 
 
+def is_direct_media_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    return any(path.endswith(ext) for ext in (".mp4", ".m4v", ".mov", ".webm", ".mkv", ".flv", ".avi"))
+
+
 def detect_platform(url: Optional[str]) -> str:
     value = str(url or "").lower()
     if "x.com/" in value or "twitter.com/" in value:
@@ -956,6 +962,16 @@ def discover_stream(
             "extractor": "direct",
             "streams": [url],
             "stream_options": [build_stream_option(url, source="direct")],
+        })
+        return info
+
+    if is_direct_media_url(url):
+        info.update({
+            "resolved_url": url,
+            "is_m3u8": False,
+            "extractor": "direct-media",
+            "streams": [url],
+            "stream_options": [build_stream_option(url, source="direct-media")],
         })
         return info
 
