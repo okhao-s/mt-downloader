@@ -1298,9 +1298,11 @@ def normalize_filename(name: str) -> str:
     stem = stem.strip(" ._")
     stem = re.sub(r"\.{2,}", ".", stem)
 
-    max_stem_length = 120
-    if len(stem) > max_stem_length:
-        stem = stem[:max_stem_length].rstrip(" ._")
+    max_name_bytes = 240
+    suffix_bytes = len(suffix.encode("utf-8"))
+    max_stem_bytes = max(1, max_name_bytes - suffix_bytes)
+    while stem and len(stem.encode("utf-8")) > max_stem_bytes:
+        stem = stem[:-1].rstrip(" ._")
 
     if not stem:
         stem = "output"
