@@ -212,7 +212,28 @@ async def save_uploaded_cookie_file(file: UploadFile, target_path: Path, config_
 def build_wecom_job_created_feedback(job: dict) -> str:
     prefix = build_wecom_prefix(job.get("platform"))
     filename = resolve_job_display_name(job)
-    return f"{prefix} 任务创建成功：{filename}"
+    lines = [f"{prefix} 任务已创建", f"文件：{filename}"]
+    if job.get("id"):
+        lines.append(f"任务ID：{job.get('id')}")
+    status_text = str(job.get("status_text") or "").strip()
+    if status_text:
+        lines.append(f"状态：{status_text[:120]}")
+    return "\n".join(lines)
+
+
+def build_wecom_job_started_feedback(job: dict) -> str:
+    prefix = build_wecom_prefix(job.get("platform"))
+    filename = resolve_job_display_name(job)
+    lines = [f"{prefix} 开始下载", f"文件：{filename}"]
+    if job.get("id"):
+        lines.append(f"任务ID：{job.get('id')}")
+    status = str(job.get("status") or "").strip().lower()
+    status_text = str(job.get("status_text") or "").strip()
+    if status == "downloading" and status_text:
+        lines.append(f"状态：{status_text[:120]}")
+    else:
+        lines.append("状态：任务已进入下载阶段")
+    return "\n".join(lines)
 
 
 def build_wecom_job_completion_feedback(job: dict) -> str:
@@ -284,28 +305,41 @@ def get_job_snapshot(job_id: str | None) -> dict | None:
     return None
 
 
-def ensure_wecom_created_notified(job_id: str | None, wait_timeout: float = 5.0) -> bool:
+def ensure_wecom_notified(job_id: str | None, kind: str, wait_timeout: float = 5.0) -> bool:
     if not job_id:
         return False
     deadline = time.time() + max(0.0, wait_timeout)
     attempted_trigger = False
+    trigger = notify_wecom_job_created if kind == "created" else notify_wecom_job_started if kind == "started" else None
+    if not trigger:
+        return False
+    flag_key = f"wecom_{kind}_notified"
+    inflight_key = f"wecom_{kind}_notifying"
     while True:
         snapshot = get_job_snapshot(job_id)
         if not snapshot:
             return False
-        if snapshot.get("wecom_created_notified"):
+        if snapshot.get(flag_key):
             return True
         if not snapshot.get("wecom_to_user"):
             return False
-        if not snapshot.get("wecom_created_notifying"):
+        if not snapshot.get(inflight_key):
             if attempted_trigger:
                 return False
             attempted_trigger = True
-            notify_wecom_job_created(snapshot)
+            trigger(snapshot)
             continue
         if time.time() >= deadline:
             return False
         time.sleep(0.05)
+
+
+def ensure_wecom_created_notified(job_id: str | None, wait_timeout: float = 5.0) -> bool:
+    return ensure_wecom_notified(job_id, "created", wait_timeout=wait_timeout)
+
+
+def ensure_wecom_started_notified(job_id: str | None, wait_timeout: float = 5.0) -> bool:
+    return ensure_wecom_notified(job_id, "started", wait_timeout=wait_timeout)
 
 
 def notify_wecom_job_created(job: dict):
@@ -326,6 +360,28 @@ def notify_wecom_job_created(job: dict):
     finish_wecom_notification(job_id, "created", success=True)
 
 
+def notify_wecom_job_started(job: dict):
+    job_id = str(job.get("id") or "").strip()
+    snapshot = get_job_snapshot(job_id) or job.copy()
+    status = str(snapshot.get("status") or "").strip().lower()
+    if status not in {"downloading", "done"}:
+        return
+    to_user = str(snapshot.get("wecom_to_user") or "").strip()
+    if not to_user:
+        return
+    ensure_wecom_created_notified(job_id)
+    claimed_job = claim_wecom_notification(job_id, "started")
+    if not claimed_job:
+        return
+    try:
+        send_wecom_text(to_user, build_wecom_job_started_feedback(claimed_job.copy()))
+    except Exception as exc:
+        print(f"[wecom] job_started notify failed: job_id={job_id} to={to_user} error={exc}")
+        finish_wecom_notification(job_id, "started", success=False)
+        return
+    finish_wecom_notification(job_id, "started", success=True)
+
+
 def notify_wecom_job_completion(job: dict):
     job_id = str(job.get("id") or "").strip()
     snapshot = get_job_snapshot(job_id) or job.copy()
@@ -336,6 +392,9 @@ def notify_wecom_job_completion(job: dict):
     if not to_user:
         return
     ensure_wecom_created_notified(job_id)
+    started_required = status == "done"
+    if started_required:
+        ensure_wecom_started_notified(job_id)
     claimed_job = claim_wecom_notification(job_id, "completion")
     if not claimed_job:
         return
@@ -380,6 +439,7 @@ def is_job_hidden(job: dict) -> bool:
 
 def update_job(job_id: str, **updates):
     notify_created_job = None
+    notify_started_job = None
     notify_completion_job = None
     with jobs_lock:
         for job in jobs:
@@ -389,6 +449,8 @@ def update_job(job_id: str, **updates):
                 status = str(job.get("status") or "").strip().lower()
                 if status == "queued" and job.get("wecom_to_user") and not job.get("wecom_created_notified"):
                     notify_created_job = job.copy()
+                if status == "downloading" and job.get("wecom_to_user") and not job.get("wecom_started_notified"):
+                    notify_started_job = job.copy()
                 if status in WECOM_FINAL_STATUSES and job.get("wecom_to_user") and not job.get("wecom_completion_notified"):
                     notify_completion_job = job.copy()
                 result = job
@@ -397,6 +459,8 @@ def update_job(job_id: str, **updates):
             return None
     if notify_created_job:
         notify_wecom_job_created(notify_created_job)
+    if notify_started_job:
+        notify_wecom_job_started(notify_started_job)
     if notify_completion_job:
         notify_wecom_job_completion(notify_completion_job)
     return result
@@ -943,6 +1007,9 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "wecom_created_notified": False,
         "wecom_created_notified_at": None,
         "wecom_created_notifying": False,
+        "wecom_started_notified": False,
+        "wecom_started_notified_at": None,
+        "wecom_started_notifying": False,
         "wecom_completion_notified": False,
         "wecom_completion_notified_at": None,
         "wecom_completion_notifying": False,

@@ -39,6 +39,9 @@ def sample_job(job_id="job1", status="queued"):
         "wecom_created_notified": False,
         "wecom_created_notified_at": None,
         "wecom_created_notifying": False,
+        "wecom_started_notified": False,
+        "wecom_started_notified_at": None,
+        "wecom_started_notifying": False,
         "wecom_completion_notified": False,
         "wecom_completion_notified_at": None,
         "wecom_completion_notifying": False,
@@ -93,7 +96,27 @@ def test_completion_notify_failure_does_not_mark_notified():
     assert stored["wecom_completion_notified_at"] is None
 
 
-def test_race_fast_done_sends_both_notifications_once():
+def test_started_notify_marks_only_after_success():
+    reset_jobs()
+    job = sample_job("started-ok", status="downloading")
+    job["status_text"] = "开始下载 · 当前下载槽位 1/2"
+    app.add_job(job)
+
+    sent = []
+    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
+
+    app.notify_wecom_job_started(job.copy())
+
+    stored = next(j for j in app.jobs if j["id"] == "started-ok")
+    assert len(sent) == 2
+    assert "任务已创建" in sent[0]
+    assert "开始下载" in sent[1]
+    assert stored["wecom_created_notified"] is True
+    assert stored["wecom_started_notified"] is True
+    assert stored["wecom_started_notified_at"]
+
+
+def test_race_fast_done_sends_created_started_completion_once():
     reset_jobs()
     sent = []
     app.send_wecom_text = lambda to_user, content: sent.append((to_user, content)) or {"msgid": str(len(sent))}
@@ -101,11 +124,16 @@ def test_race_fast_done_sends_both_notifications_once():
     job = sample_job("racejob1", status="queued")
     app.add_job(job)
     app.notify_wecom_job_created(job.copy())
+    app.update_job("racejob1", status="downloading", progress=8, status_text="开始下载", started_at=app.iso_now())
     app.update_job("racejob1", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
 
     stored = next(j for j in app.jobs if j["id"] == "racejob1")
-    assert len(sent) == 2
+    assert len(sent) == 3
+    assert "任务已创建" in sent[0][1]
+    assert "开始下载" in sent[1][1]
+    assert "下载完成" in sent[2][1]
     assert stored["wecom_created_notified"] is True
+    assert stored["wecom_started_notified"] is True
     assert stored["wecom_completion_notified"] is True
 
 
@@ -115,7 +143,7 @@ def test_fast_completion_waits_for_created_notification_order():
     release_created = {"ok": False}
 
     def fake_send(to_user, content):
-        is_created = "任务创建成功" in content
+        is_created = "任务已创建" in content
         if is_created:
             while not release_created["ok"]:
                 app.time.sleep(0.01)
@@ -131,17 +159,21 @@ def test_fast_completion_waits_for_created_notification_order():
     app.time.sleep(0.05)
     releaser = app.threading.Thread(target=lambda: (app.time.sleep(0.2), release_created.__setitem__("ok", True)), daemon=True)
     releaser.start()
+    app.update_job("race-order", status="downloading", progress=8, status_text="开始下载", started_at=app.iso_now())
     app.update_job("race-order", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
     creator.join(timeout=2)
     releaser.join(timeout=2)
 
     stored = next(j for j in app.jobs if j["id"] == "race-order")
-    assert len(sent) == 2
-    assert "任务创建成功" in sent[0]
-    assert "下载完成" in sent[1]
+    assert len(sent) == 3
+    assert "任务已创建" in sent[0]
+    assert "开始下载" in sent[1]
+    assert "下载完成" in sent[2]
     assert stored["wecom_created_notified"] is True
+    assert stored["wecom_started_notified"] is True
     assert stored["wecom_completion_notified"] is True
     assert stored["wecom_created_notifying"] is False
+    assert stored["wecom_started_notifying"] is False
     assert stored["wecom_completion_notifying"] is False
 
 
@@ -155,10 +187,31 @@ def test_completion_will_backfill_created_if_needed():
     app.notify_wecom_job_completion(job.copy())
 
     stored = next(j for j in app.jobs if j["id"] == "race-backfill")
-    assert len(sent) == 2
-    assert "任务创建成功" in sent[0]
-    assert "下载完成" in sent[1]
+    assert len(sent) == 3
+    assert "任务已创建" in sent[0]
+    assert "开始下载" in sent[1]
+    assert "下载完成" in sent[2]
     assert stored["wecom_created_notified"] is True
+    assert stored["wecom_started_notified"] is True
+    assert stored["wecom_completion_notified"] is True
+
+
+def test_completion_will_backfill_started_for_done_if_needed():
+    reset_jobs()
+    sent = []
+    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
+
+    job = sample_job("race-start-backfill", status="done")
+    job["wecom_created_notified"] = True
+    job["wecom_created_notified_at"] = app.iso_now()
+    app.add_job(job)
+    app.notify_wecom_job_completion(job.copy())
+
+    stored = next(j for j in app.jobs if j["id"] == "race-start-backfill")
+    assert len(sent) == 2
+    assert "开始下载" in sent[0]
+    assert "下载完成" in sent[1]
+    assert stored["wecom_started_notified"] is True
     assert stored["wecom_completion_notified"] is True
 
 
@@ -195,9 +248,11 @@ if __name__ == "__main__":
         test_created_notify_marks_only_after_success,
         test_created_notify_failure_does_not_mark_notified,
         test_completion_notify_failure_does_not_mark_notified,
-        test_race_fast_done_sends_both_notifications_once,
+        test_started_notify_marks_only_after_success,
+        test_race_fast_done_sends_created_started_completion_once,
         test_fast_completion_waits_for_created_notification_order,
         test_completion_will_backfill_created_if_needed,
+        test_completion_will_backfill_started_for_done_if_needed,
         test_wecom_client_error_details_for_invalid_touser,
     ]
     for test in tests:
