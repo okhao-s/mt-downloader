@@ -61,7 +61,7 @@ jobs: list[dict] = []
 jobs_lock = threading.Lock()
 MAX_CONCURRENT_DOWNLOADS = 3
 download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="mt-download")
-WECOM_FINAL_STATUSES = {"done", "failed", "cancelled"}
+WECOM_FINAL_STATUSES = {"done"}
 CONFIG_KEEP_SENTINEL = "__KEEP__"
 
 
@@ -159,7 +159,7 @@ def resolve_job_display_name(job: dict | None = None, platform: str | None = Non
 
 def build_wecom_passive_ack(url: str, platform: str) -> str:
     prefix = build_wecom_prefix(platform)
-    return f"{prefix} 已收到链接，正在创建任务，请稍等。"
+    return f"{prefix} 收到任务，正在创建任务，请稍等。"
 
 
 def enrich_config_view(cfg: dict) -> dict:
@@ -212,12 +212,9 @@ async def save_uploaded_cookie_file(file: UploadFile, target_path: Path, config_
 def build_wecom_job_created_feedback(job: dict) -> str:
     prefix = build_wecom_prefix(job.get("platform"))
     filename = resolve_job_display_name(job)
-    lines = [f"{prefix} 任务已创建", f"文件：{filename}"]
+    lines = [f"{prefix} 收到任务", f"文件：{filename}"]
     if job.get("id"):
         lines.append(f"任务ID：{job.get('id')}")
-    status_text = str(job.get("status_text") or "").strip()
-    if status_text:
-        lines.append(f"状态：{status_text[:120]}")
     return "\n".join(lines)
 
 
@@ -1004,8 +1001,8 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "extractor": extractor,
         "request_payload": payload.model_dump(),
         "wecom_to_user": str(payload.wecom_to_user or "").strip(),
-        "wecom_created_notified": False,
-        "wecom_created_notified_at": None,
+        "wecom_created_notified": bool(payload.wecom_to_user),
+        "wecom_created_notified_at": now if payload.wecom_to_user else None,
         "wecom_created_notifying": False,
         "wecom_started_notified": False,
         "wecom_started_notified_at": None,
@@ -1015,8 +1012,6 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "wecom_completion_notifying": False,
     }
     add_job(job)
-    if job.get("wecom_to_user"):
-        notify_wecom_job_created(job.copy())
 
     download_executor.submit(
         run_download_job,
