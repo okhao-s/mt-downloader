@@ -24,6 +24,7 @@ from core import (
     choose_stream_url,
     detect_platform,
     discover_stream,
+    route_proxy_for_url,
     download_with_ytdlp,
     ffmpeg_download,
     is_direct_media_url,
@@ -537,6 +538,12 @@ def should_use_site_cookies(target_url: str | None, cookies_path: str | None) ->
     return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili", "douyin"})
 
 
+def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, cfg: dict | None = None) -> str | None:
+    active_cfg = cfg or load_config()
+    configured_proxy = requested_proxy or active_cfg.get("default_proxy") or None
+    return route_proxy_for_url(url, configured_proxy)
+
+
 def resolve_download_mode(platform: str, stream_url: str | None) -> str:
     if platform in {"youtube", "bilibili"}:
         return "ytdlp"
@@ -669,8 +676,8 @@ def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
 @app.post("/api/parse")
 def parse_url(payload: ParsePayload):
     cfg = load_config()
-    proxy = payload.proxy or cfg.get("default_proxy") or None
     input_url = normalize_input_url(payload.url)
+    proxy = resolve_request_proxy(input_url, payload.proxy, cfg)
     if not input_url:
         raise HTTPException(status_code=400, detail="请提供有效链接")
     cookies_path = resolve_site_cookies_path(input_url, cfg)
@@ -840,8 +847,8 @@ def run_download_job(
 
 def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     cfg = load_config()
-    proxy = payload.proxy or cfg.get("default_proxy") or None
     input_url = normalize_input_url(payload.url)
+    proxy = resolve_request_proxy(input_url, payload.proxy, cfg)
     if not input_url:
         raise HTTPException(status_code=400, detail="请提供有效链接")
     if payload.stream_url:
@@ -993,8 +1000,8 @@ def download(request: Request, payload: DownloadPayload):
 @app.post("/api/download/all")
 def download_all(request: Request, payload: BatchDownloadPayload):
     cfg = load_config()
-    proxy = payload.proxy or cfg.get("default_proxy") or None
     input_url = normalize_input_url(payload.url)
+    proxy = resolve_request_proxy(input_url, payload.proxy, cfg)
     if not input_url:
         raise HTTPException(status_code=400, detail="请提供有效链接")
     cookies_path = resolve_site_cookies_path(input_url, cfg)
@@ -1105,7 +1112,7 @@ def preview_m3u8(
     stream_index: int | None = None,
 ):
     cfg = load_config()
-    actual_proxy = proxy or cfg.get("default_proxy") or None
+    actual_proxy = resolve_request_proxy(url, proxy, cfg)
     if stream_url:
         selected_stream = stream_url
     else:
@@ -1126,7 +1133,7 @@ def preview_m3u8(
 @app.get("/api/media/{name:path}")
 def media_proxy(name: str = "", target: str = "", referer: str | None = None, user_agent: str | None = None, proxy: str | None = None):
     cfg = load_config()
-    actual_proxy = proxy or cfg.get("default_proxy") or None
+    actual_proxy = resolve_request_proxy(target, proxy, cfg)
     try:
         r = safe_requests_get(target, referer=referer, user_agent=user_agent, proxy=actual_proxy, timeout=60)
         r.raise_for_status()

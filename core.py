@@ -15,6 +15,7 @@ CONFIG_PATH = Path(os.getenv("APP_CONFIG_PATH", "/app/data/config.json"))
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
 X_GQL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
 X_TWEET_RESULT_BY_REST_ID_QUERY = "sBoAB5nqJTOyR9sZ5qVLsw"
+DEFAULT_PROXY_BYPASS_PLATFORMS = {"douyin", "bilibili"}
 
 
 def ensure_parent(path: Path):
@@ -92,6 +93,16 @@ def build_proxies(proxy: Optional[str]) -> Optional[dict]:
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", proxy):
         proxy = f"http://{proxy}"
     return {"http": proxy, "https": proxy}
+
+
+def route_proxy_for_url(url: Optional[str], proxy: Optional[str]) -> Optional[str]:
+    normalized_proxy = (proxy or "").strip()
+    if not normalized_proxy:
+        return None
+    platform = detect_platform(url)
+    if platform in DEFAULT_PROXY_BYPASS_PLATFORMS:
+        return None
+    return normalized_proxy
 
 
 def is_m3u8_url(url: str) -> bool:

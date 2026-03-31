@@ -137,6 +137,13 @@ docker run -d \
 - `wecom_encoding_aes_key`
 - `wecom_callback_url`
 
+代理路由规则（当前默认行为）：
+
+- `default_proxy` 仍然是统一默认代理入口
+- `douyin` / `bilibili` 自动直连，不走代理
+- 其他平台默认走 `default_proxy`
+- 若请求里显式传了 `proxy`，也会先经过同一套路由规则
+
 ### cookies 默认路径
 
 ```text
