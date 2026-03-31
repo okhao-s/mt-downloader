@@ -224,6 +224,81 @@ def test_failed_and_cancelled_do_not_send_completion_notifications():
     assert cancelled_stored["wecom_completion_notified"] is False
 
 
+def test_completion_retry_recovers_slow_done_after_transient_send_failure():
+    reset_jobs()
+    sent = []
+    attempts = {"completion": 0}
+    old_delays = app.WECOM_NOTIFY_RETRY_DELAYS
+    app.WECOM_NOTIFY_RETRY_DELAYS = (0.01, 0.02)
+
+    def fake_send(to_user, content):
+        if "下载完成" in content:
+            attempts["completion"] += 1
+            if attempts["completion"] == 1:
+                raise RuntimeError("transient completion failure")
+        sent.append(content)
+        return {"msgid": str(len(sent))}
+
+    try:
+        app.send_wecom_text = fake_send
+        job = sample_job("slow-done-retry", status="done")
+        job["wecom_created_notified"] = True
+        job["wecom_created_notified_at"] = app.iso_now()
+        job["wecom_started_notified"] = True
+        job["wecom_started_notified_at"] = app.iso_now()
+        app.add_job(job)
+
+        app.notify_wecom_job_completion(job.copy())
+        app.time.sleep(0.08)
+
+        stored = next(j for j in app.jobs if j["id"] == "slow-done-retry")
+        assert attempts["completion"] >= 2
+        assert len([item for item in sent if "下载完成" in item]) == 1
+        assert stored["wecom_completion_notified"] is True
+        assert stored["wecom_completion_notifying"] is False
+    finally:
+        app.WECOM_NOTIFY_RETRY_DELAYS = old_delays
+
+
+def test_fast_done_retry_keeps_three_notifications_only_once_each():
+    reset_jobs()
+    sent = []
+    started_attempts = {"count": 0}
+    old_delays = app.WECOM_NOTIFY_RETRY_DELAYS
+    app.WECOM_NOTIFY_RETRY_DELAYS = (0.01, 0.02)
+
+    def fake_send(to_user, content):
+        if "开始下载" in content:
+            started_attempts["count"] += 1
+            if started_attempts["count"] == 1:
+                raise RuntimeError("transient started failure")
+        sent.append(content)
+        return {"msgid": str(len(sent))}
+
+    try:
+        app.send_wecom_text = fake_send
+        job = sample_job("fast-done-retry", status="queued")
+        job["wecom_created_notified"] = True
+        job["wecom_created_notified_at"] = app.iso_now()
+        app.add_job(job)
+
+        app.update_job("fast-done-retry", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
+        app.time.sleep(0.08)
+
+        stored = next(j for j in app.jobs if j["id"] == "fast-done-retry")
+        assert started_attempts["count"] >= 2
+        assert len([item for item in sent if "开始下载" in item]) == 1
+        assert len([item for item in sent if "下载完成" in item]) == 1
+        assert "开始下载" in sent[0]
+        assert "下载完成" in sent[1]
+        assert stored["wecom_started_notified"] is True
+        assert stored["wecom_completion_notified"] is True
+        assert stored["wecom_started_notifying"] is False
+        assert stored["wecom_completion_notifying"] is False
+    finally:
+        app.WECOM_NOTIFY_RETRY_DELAYS = old_delays
+
+
 def test_wecom_client_error_details_for_invalid_touser():
     client = wecom.WeComClient("ww123456", 1000002, "secret")
     client.get_access_token = types.MethodType(lambda self, force_refresh=False: "token123", client)
@@ -262,6 +337,8 @@ if __name__ == "__main__":
         test_fast_completion_waits_for_started_notification_order,
         test_completion_will_backfill_started_for_done_if_needed,
         test_failed_and_cancelled_do_not_send_completion_notifications,
+        test_completion_retry_recovers_slow_done_after_transient_send_failure,
+        test_fast_done_retry_keeps_three_notifications_only_once_each,
         test_wecom_client_error_details_for_invalid_touser,
     ]
     for test in tests:
