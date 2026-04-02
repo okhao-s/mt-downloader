@@ -486,6 +486,60 @@ def test_completion_continues_when_created_wait_times_out():
         app.schedule_wecom_notification_retry = old_schedule_retry
 
 
+def test_created_retry_backfills_after_job_left_queued():
+    reset_jobs()
+    sent = []
+    old_delays = app.WECOM_NOTIFY_RETRY_DELAYS
+
+    def fake_send(to_user, content):
+        sent.append(content)
+        return {"msgid": str(len(sent))}
+
+    try:
+        app.WECOM_NOTIFY_RETRY_DELAYS = (0.01,)
+        app.send_wecom_text = fake_send
+        job = sample_job("created-backfill-done", status="done")
+        app.add_job(job)
+
+        app.schedule_wecom_notification_retry(job["id"], "created")
+        app.time.sleep(0.05)
+
+        stored = next(j for j in app.jobs if j["id"] == "created-backfill-done")
+        assert len(sent) == 1
+        assert "收到任务" in sent[0]
+        assert stored["wecom_created_notified"] is True
+        assert stored["wecom_created_retry_scheduled"] is False
+    finally:
+        app.WECOM_NOTIFY_RETRY_DELAYS = old_delays
+
+
+def test_started_schedules_created_retry_for_done_job_backfill():
+    reset_jobs()
+    sent = []
+    retries = []
+
+    old_send = app.send_wecom_text
+    old_ensure_created = app.ensure_wecom_created_notified
+    old_schedule_retry = app.schedule_wecom_notification_retry
+    try:
+        app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
+        app.ensure_wecom_created_notified = lambda job_id, wait_timeout=0: False
+        app.schedule_wecom_notification_retry = lambda job_id, kind, delays=None: retries.append((job_id, kind))
+
+        job = sample_job("started-created-backfill", status="done")
+        app.add_job(job)
+        app.notify_wecom_job_started(job.copy())
+
+        stored = next(j for j in app.jobs if j["id"] == "started-created-backfill")
+        assert sent and "开始下载" in sent[0]
+        assert ("started-created-backfill", "created") in retries
+        assert stored["wecom_started_notified"] is True
+    finally:
+        app.send_wecom_text = old_send
+        app.ensure_wecom_created_notified = old_ensure_created
+        app.schedule_wecom_notification_retry = old_schedule_retry
+
+
 if __name__ == "__main__":
     tests = [
         test_created_notify_marks_only_after_success,
@@ -502,6 +556,8 @@ if __name__ == "__main__":
         test_create_download_job_does_not_premark_created_notified,
         test_create_download_job_triggers_created_notification_async,
         test_completion_continues_when_created_wait_times_out,
+        test_created_retry_backfills_after_job_left_queued,
+        test_started_schedules_created_retry_for_done_job_backfill,
         test_wecom_client_error_details_for_invalid_touser,
     ]
     for test in tests:

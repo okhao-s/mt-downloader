@@ -348,6 +348,17 @@ def mark_wecom_retry_scheduled(job_id: str | None, kind: str, scheduled: bool) -
     return False
 
 
+def should_backfill_wecom_created(job: dict | None) -> bool:
+    if not job or is_job_hidden(job):
+        return False
+    if not str(job.get("wecom_to_user") or "").strip():
+        return False
+    if job.get("wecom_created_notified"):
+        return False
+    status = str(job.get("status") or "").strip().lower()
+    return status in {"queued", "downloading", *WECOM_FINAL_STATUSES}
+
+
 def ensure_wecom_notified(job_id: str | None, kind: str, wait_timeout: float = 5.0) -> bool:
     if not job_id:
         return False
@@ -410,7 +421,7 @@ def schedule_wecom_notification_retry(job_id: str | None, kind: str, delays: tup
                 if snapshot.get(f"wecom_{kind}_notified"):
                     return
                 status = str(snapshot.get("status") or "").strip().lower()
-                if kind == "created" and status != "queued":
+                if kind == "created" and not should_backfill_wecom_created(snapshot):
                     return
                 if kind == "started" and status not in {"downloading", "done"}:
                     return
@@ -433,6 +444,9 @@ def schedule_wecom_notification_retry(job_id: str | None, kind: str, delays: tup
 
 def notify_wecom_job_created(job: dict):
     job_id = str(job.get("id") or "").strip()
+    snapshot = get_job_snapshot(job_id) or job.copy()
+    if not should_backfill_wecom_created(snapshot):
+        return
     claimed_job = claim_wecom_notification(job_id, "created")
     if not claimed_job:
         return
@@ -462,7 +476,7 @@ def notify_wecom_job_started(job: dict):
     created_ready = ensure_wecom_created_notified(job_id)
     if not created_ready:
         latest = get_job_snapshot(job_id)
-        if latest and not latest.get("wecom_created_retry_scheduled"):
+        if should_backfill_wecom_created(latest) and not latest.get("wecom_created_retry_scheduled"):
             schedule_wecom_notification_retry(job_id, "created")
     claimed_job = claim_wecom_notification(job_id, "started")
     if not claimed_job:
