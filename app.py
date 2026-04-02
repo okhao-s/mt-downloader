@@ -194,19 +194,14 @@ def send_wecom_text(to_user: str, content: str) -> dict:
 
 def trigger_wecom_notification_async(kind: str, job: dict | None = None, job_id: str | None = None):
     active_job_id = str(job_id or (job or {}).get("id") or "").strip()
-    if not active_job_id or kind not in {"created", "started", "completion"}:
+    if not active_job_id or kind != "created":
         return
 
     def worker():
         snapshot = get_job_snapshot(active_job_id) or dict(job or {})
         if not snapshot:
             return
-        if kind == "created":
-            notify_wecom_job_created(snapshot)
-        elif kind == "started":
-            notify_wecom_job_started(snapshot)
-        else:
-            notify_wecom_job_completion(snapshot)
+        notify_wecom_job_created(snapshot)
 
     threading.Thread(target=worker, name=f"wecom-notify-{kind}-{active_job_id[:6]}", daemon=True).start()
 
@@ -483,12 +478,12 @@ def ensure_wecom_created_notified(job_id: str | None, wait_timeout: float = WECO
 
 
 def ensure_wecom_started_notified(job_id: str | None, wait_timeout: float = WECOM_STARTED_WAIT_TIMEOUT) -> bool:
-    return ensure_wecom_notified(job_id, "started", wait_timeout=wait_timeout)
+    return False
 
 
 def schedule_wecom_notification_retry(job_id: str | None, kind: str, delays: tuple[float, ...] | None = None):
     job_id = str(job_id or "").strip()
-    if not job_id or kind not in {"created", "started", "completion"}:
+    if not job_id or kind != "created":
         return
     if not mark_wecom_retry_scheduled(job_id, kind, True):
         return
@@ -503,23 +498,13 @@ def schedule_wecom_notification_retry(job_id: str | None, kind: str, delays: tup
                     return
                 if not snapshot.get("wecom_to_user"):
                     return
-                if snapshot.get(f"wecom_{kind}_notified"):
+                if snapshot.get("wecom_created_notified"):
                     return
-                status = str(snapshot.get("status") or "").strip().lower()
-                if kind == "created" and not should_backfill_wecom_created(snapshot):
+                if not should_backfill_wecom_created(snapshot):
                     return
-                if kind == "started" and status not in {"downloading", "done"}:
-                    return
-                if kind == "completion" and status not in WECOM_FINAL_STATUSES:
-                    return
-                if kind == "created":
-                    notify_wecom_job_created(snapshot)
-                elif kind == "started":
-                    notify_wecom_job_started(snapshot)
-                else:
-                    notify_wecom_job_completion(snapshot)
+                notify_wecom_job_created(snapshot)
                 latest = get_job_snapshot(job_id)
-                if not latest or latest.get(f"wecom_{kind}_notified"):
+                if not latest or latest.get("wecom_created_notified"):
                     return
         finally:
             mark_wecom_retry_scheduled(job_id, kind, False)
@@ -550,67 +535,11 @@ def notify_wecom_job_created(job: dict):
 
 
 def notify_wecom_job_started(job: dict):
-    job_id = str(job.get("id") or "").strip()
-    snapshot = get_job_snapshot(job_id) or job.copy()
-    status = str(snapshot.get("status") or "").strip().lower()
-    if status not in {"downloading", "done"}:
-        return
-    to_user = str(snapshot.get("wecom_to_user") or "").strip()
-    if not to_user:
-        return
-    created_ready = ensure_wecom_created_notified(job_id)
-    if not created_ready:
-        latest = get_job_snapshot(job_id)
-        if should_backfill_wecom_created(latest) and not latest.get("wecom_created_retry_scheduled"):
-            schedule_wecom_notification_retry(job_id, "created")
-    claimed_job = claim_wecom_notification(job_id, "started")
-    if not claimed_job:
-        return
-    try:
-        send_wecom_text(to_user, build_wecom_job_started_feedback(claimed_job.copy()))
-    except Exception as exc:
-        print(f"[wecom] job_started notify failed: job_id={job_id} to={to_user} error={exc}")
-        finish_wecom_notification(job_id, "started", success=False)
-        schedule_wecom_notification_retry(job_id, "started")
-        return
-    finish_wecom_notification(job_id, "started", success=True)
+    return
 
 
 def notify_wecom_job_completion(job: dict):
-    job_id = str(job.get("id") or "").strip()
-    snapshot = get_job_snapshot(job_id) or job.copy()
-    status = str(snapshot.get("status") or "").strip().lower()
-    if status not in WECOM_FINAL_STATUSES:
-        return
-    to_user = str(snapshot.get("wecom_to_user") or "").strip()
-    if not to_user:
-        return
-    created_ready = ensure_wecom_created_notified(job_id)
-    if not created_ready:
-        latest = get_job_snapshot(job_id)
-        if latest and not latest.get("wecom_created_retry_scheduled"):
-            schedule_wecom_notification_retry(job_id, "created")
-    started_required = status == "done"
-    started_ready = True
-    if started_required:
-        started_ready = ensure_wecom_started_notified(job_id)
-    if not started_ready:
-        latest = get_job_snapshot(job_id)
-        if latest and not latest.get("wecom_started_retry_scheduled"):
-            schedule_wecom_notification_retry(job_id, "started")
-        schedule_wecom_notification_retry(job_id, "completion")
-        return
-    claimed_job = claim_wecom_notification(job_id, "completion")
-    if not claimed_job:
-        return
-    try:
-        send_wecom_text(to_user, build_wecom_job_completion_feedback(claimed_job.copy()))
-    except Exception as exc:
-        print(f"[wecom] job_completion notify failed: job_id={job_id} status={status} to={to_user} error={exc}")
-        finish_wecom_notification(job_id, "completion", success=False)
-        schedule_wecom_notification_retry(job_id, "completion")
-        return
-    finish_wecom_notification(job_id, "completion", success=True)
+    return
 
 
 def handle_wecom_download_message(msg: dict):
@@ -645,8 +574,6 @@ def is_job_hidden(job: dict) -> bool:
 
 def update_job(job_id: str, **updates):
     notify_created_job = None
-    notify_started_job = None
-    notify_completion_job = None
     with jobs_lock:
         for job in jobs:
             if job.get("id") == job_id:
@@ -655,20 +582,12 @@ def update_job(job_id: str, **updates):
                 status = str(job.get("status") or "").strip().lower()
                 if status == "queued" and job.get("wecom_to_user") and not job.get("wecom_created_notified"):
                     notify_created_job = job.copy()
-                if status == "downloading" and job.get("wecom_to_user") and not job.get("wecom_started_notified"):
-                    notify_started_job = job.copy()
-                if status in WECOM_FINAL_STATUSES and job.get("wecom_to_user") and not job.get("wecom_completion_notified"):
-                    notify_completion_job = job.copy()
                 result = job
                 break
         else:
             return None
     if notify_created_job:
         notify_wecom_job_created(notify_created_job)
-    if notify_started_job:
-        notify_wecom_job_started(notify_started_job)
-    if notify_completion_job:
-        notify_wecom_job_completion(notify_completion_job)
     return result
 
 
