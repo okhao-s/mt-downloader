@@ -197,11 +197,18 @@ def is_probably_audio_only_format(fmt: dict) -> bool:
 
 
 def extract_title_from_html(html: str) -> Optional[str]:
-    candidates = []
-    patterns = [
-        r'<meta\s+property="og:title"\s+content="([^"]+)"',
-        r'<meta\s+name="twitter:title"\s+content="([^"]+)"',
-        r'<meta\s+name="title"\s+content="([^"]+)"',
+    meta_candidates = []
+    other_candidates = []
+
+    meta_patterns = [
+        r"<meta[^>]+property\s*=\s*['\"]og:title['\"][^>]+content\s*=\s*['\"](.*?)['\"]",
+        r"<meta[^>]+content\s*=\s*['\"](.*?)['\"][^>]+property\s*=\s*['\"]og:title['\"]",
+        r"<meta[^>]+name\s*=\s*['\"]twitter:title['\"][^>]+content\s*=\s*['\"](.*?)['\"]",
+        r"<meta[^>]+content\s*=\s*['\"](.*?)['\"][^>]+name\s*=\s*['\"]twitter:title['\"]",
+        r"<meta[^>]+name\s*=\s*['\"]title['\"][^>]+content\s*=\s*['\"](.*?)['\"]",
+        r"<meta[^>]+content\s*=\s*['\"](.*?)['\"][^>]+name\s*=\s*['\"]title['\"]",
+    ]
+    other_patterns = [
         r'<h1[^>]*>(.*?)</h1>',
         r'<title>(.*?)</title>',
     ]
@@ -217,21 +224,34 @@ def extract_title_from_html(html: str) -> Optional[str]:
         r"\s*[|｜]\s*51吃瓜网.*$",
         r"\s*[|｜]\s*UAA视频\s*$",
         r"\s*[|｜]\s*有爱爱\s*$",
+        r"\s*[|｜]\s*抖音\s*$",
+        r"\s*[|｜]\s*西瓜视频\s*$",
+        r"\s*[-—–]\s*YouTube\s*$",
+        r"\s*[-—–]\s*Bilibili\s*$",
     ]
 
     def clean_title(raw: str) -> str:
-        title = unescape(re.sub(r"<[^>]+>", " ", raw))
-        title = re.sub(r"\s+", " ", title).strip()
+        title = unescape(re.sub(r"<[^>]+>", " ", raw or ""))
+        title = title.replace("\u200b", " ").replace("\xa0", " ")
+        title = re.sub(r"[\r\n\t]+", " ", title)
+        title = re.sub(r"\s+", " ", title).strip(" \t\r\n-_|｜")
         for suffix_pat in suffix_patterns:
-            title = re.sub(suffix_pat, "", title).strip()
+            title = re.sub(suffix_pat, "", title, flags=re.IGNORECASE).strip(" \t\r\n-_|｜")
         return title
 
-    for pat in patterns:
+    for pat in meta_patterns:
         for match in re.findall(pat, html, re.IGNORECASE | re.DOTALL):
             title = clean_title(match)
             if title:
-                candidates.append(title)
+                meta_candidates.append(title)
 
+    for pat in other_patterns:
+        for match in re.findall(pat, html, re.IGNORECASE | re.DOTALL):
+            title = clean_title(match)
+            if title:
+                other_candidates.append(title)
+
+    candidates = meta_candidates + other_candidates
     if not candidates:
         return None
 
@@ -239,8 +259,16 @@ def extract_title_from_html(html: str) -> Optional[str]:
         title for title in candidates
         if not any(marker in title for marker in generic_markers)
     ]
+    if meta_candidates:
+        preferred = [
+            title for title in dedupe_keep_order(meta_candidates)
+            if not any(marker in title for marker in generic_markers)
+        ]
+        if preferred:
+            preferred.sort(key=lambda x: (len(x) >= 4, len(x)), reverse=True)
+            return preferred[0]
     pool = dedupe_keep_order(non_generic or candidates)
-    pool.sort(key=lambda x: len(x), reverse=True)
+    pool.sort(key=lambda x: (len(x) >= 4, len(x)), reverse=True)
     return pool[0]
 
 

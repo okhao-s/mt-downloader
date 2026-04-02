@@ -67,6 +67,80 @@ WECOM_NOTIFY_RETRY_DELAYS = (0.5, 1.0, 2.0)
 WECOM_NOTIFY_POLL_INTERVAL = 0.1
 WECOM_CREATED_WAIT_TIMEOUT = 0.8
 WECOM_STARTED_WAIT_TIMEOUT = 1.2
+WECOM_TITLE_MAX_LEN = 80
+WECOM_FILE_MAX_LEN = 100
+WECOM_STATUS_MAX_LEN = 120
+WECOM_ERROR_MAX_LEN = 180
+WECOM_URL_MAX_LEN = 96
+WECOM_MESSAGE_MAX_LEN = 420
+
+
+def clean_wecom_text(value: str | None) -> str:
+    text = str(value or "")
+    text = text.replace("\u200b", " ").replace("\xa0", " ")
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def truncate_wecom_text(value: str | None, limit: int, *, ellipsis: str = "…") -> str:
+    text = clean_wecom_text(value)
+    if not text or limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= len(ellipsis):
+        return ellipsis[:limit]
+    return text[: limit - len(ellipsis)].rstrip() + ellipsis
+
+
+def shorten_wecom_url(url: str | None, limit: int = WECOM_URL_MAX_LEN) -> str:
+    text = clean_wecom_text(url)
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    head = max(12, limit // 2 - 2)
+    tail = max(12, limit - head - 1)
+    if head + tail + 1 > limit:
+        tail = max(1, limit - head - 1)
+    return f"{text[:head].rstrip()}…{text[-tail:].lstrip()}"
+
+
+def format_wecom_field(label: str, value: str | None, limit: int) -> str | None:
+    text = truncate_wecom_text(value, limit)
+    if not text:
+        return None
+    return f"{label}：{text}"
+
+
+def compact_wecom_message(lines: list[str], max_len: int = WECOM_MESSAGE_MAX_LEN) -> str:
+    filtered = [clean_wecom_text(line) for line in lines if clean_wecom_text(line)]
+    if not filtered:
+        return ""
+    message = "\n".join(filtered)
+    if len(message) <= max_len:
+        return message
+    compacted = []
+    for line in filtered:
+        if line.startswith("来源："):
+            compacted.append(format_wecom_field("来源", line.split("：", 1)[1], 72) or "")
+        elif line.startswith("原因："):
+            compacted.append(format_wecom_field("原因", line.split("：", 1)[1], 120) or "")
+        elif line.startswith("状态："):
+            compacted.append(format_wecom_field("状态", line.split("：", 1)[1], 80) or "")
+        else:
+            compacted.append(line)
+    compacted = [line for line in compacted if line]
+    message = "\n".join(compacted)
+    if len(message) <= max_len:
+        return message
+    for drop_prefix in ("来源：", "状态："):
+        trimmed = [line for line in compacted if not line.startswith(drop_prefix)]
+        candidate = "\n".join(trimmed)
+        if candidate and len(candidate) <= max_len:
+            return candidate
+    return truncate_wecom_text(message, max_len)
 
 
 def mask_secret(value: str | None, keep: int = 3) -> str:
@@ -167,14 +241,14 @@ def resolve_job_display_name(job: dict | None = None, platform: str | None = Non
     candidates = []
     if job:
         candidates.extend([
-            job.get("output"),
             job.get("title"),
+            job.get("output"),
             job.get("source_url"),
         ])
     if fallback:
         candidates.append(fallback)
     for candidate in candidates:
-        value = str(candidate or "").strip()
+        value = clean_wecom_text(candidate)
         if value:
             return value
     pretty = prettify_platform(platform or (job or {}).get("platform"))
@@ -235,48 +309,59 @@ async def save_uploaded_cookie_file(file: UploadFile, target_path: Path, config_
 
 def build_wecom_job_created_feedback(job: dict) -> str:
     prefix = build_wecom_prefix(job.get("platform"))
-    filename = resolve_job_display_name(job)
-    lines = [f"{prefix} 收到任务", f"文件：{filename}"]
+    display_name = resolve_job_display_name(job)
+    lines = [f"{prefix} 收到任务"]
+    lines.append(format_wecom_field("文件", display_name, WECOM_FILE_MAX_LEN) or f"文件：{prettify_platform(job.get('platform'))} 任务")
     if job.get("id"):
         lines.append(f"任务ID：{job.get('id')}")
-    return "\n".join(lines)
+    source = shorten_wecom_url(job.get("source_url"))
+    if source:
+        lines.append(f"来源：{source}")
+    return compact_wecom_message(lines)
 
 
 def build_wecom_job_started_feedback(job: dict) -> str:
     prefix = build_wecom_prefix(job.get("platform"))
-    filename = resolve_job_display_name(job)
-    lines = [f"{prefix} 开始下载", f"文件：{filename}"]
+    display_name = resolve_job_display_name(job)
+    lines = [f"{prefix} 开始下载"]
+    lines.append(format_wecom_field("文件", display_name, WECOM_FILE_MAX_LEN) or f"文件：{prettify_platform(job.get('platform'))} 任务")
     if job.get("id"):
         lines.append(f"任务ID：{job.get('id')}")
     status = str(job.get("status") or "").strip().lower()
-    status_text = str(job.get("status_text") or "").strip()
+    status_text = clean_wecom_text(job.get("status_text"))
     if status == "downloading" and status_text:
-        lines.append(f"状态：{status_text[:120]}")
+        lines.append(format_wecom_field("状态", status_text, WECOM_STATUS_MAX_LEN) or "状态：任务已进入下载阶段")
     else:
         lines.append("状态：任务已进入下载阶段")
-    return "\n".join(lines)
+    return compact_wecom_message(lines)
 
 
 def build_wecom_job_completion_feedback(job: dict) -> str:
     status = str(job.get("status") or "").strip().lower()
     prefix = build_wecom_prefix(job.get("platform"))
-    title = str(job.get("title") or job.get("output") or "").strip()
+    title = clean_wecom_text(job.get("title"))
+    output = clean_wecom_text(job.get("output"))
+    display_name = resolve_job_display_name(job)
     status_label = {
         "done": "下载完成",
         "failed": "下载失败",
         "cancelled": "任务已取消",
     }.get(status, f"任务状态：{status or 'unknown'}")
     lines = [f"{prefix} {status_label}"]
-    if title:
-        lines.append(f"标题：{title}")
-    if job.get("output"):
-        lines.append(f"文件：{job.get('output')}")
+    if title and output and title != output:
+        lines.append(format_wecom_field("标题", title, WECOM_TITLE_MAX_LEN) or "")
+        lines.append(format_wecom_field("文件", output, WECOM_FILE_MAX_LEN) or "")
+    else:
+        lines.append(format_wecom_field("文件", display_name, WECOM_FILE_MAX_LEN) or f"文件：{prettify_platform(job.get('platform'))} 任务")
     if job.get("id"):
         lines.append(f"任务ID：{job.get('id')}")
     if status == "failed":
-        error = str(job.get("error") or job.get("status_text") or "未知原因").strip()
-        lines.append(f"原因：{error[:180]}")
-    return "\n".join(lines)
+        error = clean_wecom_text(job.get("error") or job.get("status_text") or "未知原因")
+        lines.append(format_wecom_field("原因", error, WECOM_ERROR_MAX_LEN) or "原因：未知原因")
+    source = shorten_wecom_url(job.get("source_url"))
+    if source and not output:
+        lines.append(f"来源：{source}")
+    return compact_wecom_message(lines)
 
 
 def claim_wecom_notification(job_id: str | None, kind: str) -> dict | None:
