@@ -369,6 +369,7 @@ def test_create_download_job_does_not_premark_created_notified():
     old_resolve_site_cookies_path = app.resolve_site_cookies_path
     old_load_config = app.load_config
     old_download_executor = app.download_executor
+    old_trigger = app.trigger_wecom_notification_async
 
     class DummyExecutor:
         def submit(self, *args, **kwargs):
@@ -382,6 +383,7 @@ def test_create_download_job_does_not_premark_created_notified():
         app.resolve_site_cookies_path = lambda *args, **kwargs: None
         app.load_config = lambda: {}
         app.download_executor = DummyExecutor()
+        app.trigger_wecom_notification_async = lambda *args, **kwargs: None
 
         payload = app.DownloadPayload(url="https://example.com/post/1", wecom_to_user="zhangsan")
         job = app.create_download_job(payload)
@@ -397,6 +399,91 @@ def test_create_download_job_does_not_premark_created_notified():
         app.resolve_site_cookies_path = old_resolve_site_cookies_path
         app.load_config = old_load_config
         app.download_executor = old_download_executor
+        app.trigger_wecom_notification_async = old_trigger
+
+
+def test_create_download_job_triggers_created_notification_async():
+    reset_jobs()
+
+    old_discover_stream = app.discover_stream
+    old_choose_stream_url = app.choose_stream_url
+    old_route_proxy_for_url = app.route_proxy_for_url
+    old_resolve_request_proxy = app.resolve_request_proxy
+    old_resolve_site_cookies_path = app.resolve_site_cookies_path
+    old_load_config = app.load_config
+    old_download_executor = app.download_executor
+    old_trigger = app.trigger_wecom_notification_async
+
+    class DummyExecutor:
+        def submit(self, *args, **kwargs):
+            return None
+
+    calls = []
+
+    try:
+        app.discover_stream = lambda *args, **kwargs: {"title": "标题", "streams": [{"url": "https://example.com/video.mp4"}], "extractor": "test"}
+        app.choose_stream_url = lambda info, stream_url, stream_index: "https://example.com/video.mp4"
+        app.route_proxy_for_url = lambda *args, **kwargs: ""
+        app.resolve_request_proxy = lambda *args, **kwargs: ""
+        app.resolve_site_cookies_path = lambda *args, **kwargs: None
+        app.load_config = lambda: {}
+        app.download_executor = DummyExecutor()
+        app.trigger_wecom_notification_async = lambda kind, job=None, job_id=None: calls.append((kind, (job or {}).get("id"), job_id))
+
+        payload = app.DownloadPayload(url="https://example.com/post/2", wecom_to_user="zhangsan")
+        job = app.create_download_job(payload)
+
+        assert calls == [("created", job["id"], None)]
+    finally:
+        app.discover_stream = old_discover_stream
+        app.choose_stream_url = old_choose_stream_url
+        app.route_proxy_for_url = old_route_proxy_for_url
+        app.resolve_request_proxy = old_resolve_request_proxy
+        app.resolve_site_cookies_path = old_resolve_site_cookies_path
+        app.load_config = old_load_config
+        app.download_executor = old_download_executor
+        app.trigger_wecom_notification_async = old_trigger
+
+
+def test_completion_continues_when_created_wait_times_out():
+    reset_jobs()
+    sent = []
+    old_created_wait = app.WECOM_CREATED_WAIT_TIMEOUT
+
+    job = sample_job("created-timeout-continue", status="done")
+    app.add_job(job)
+
+    def fake_send(to_user, content):
+        sent.append(content)
+        return {"msgid": str(len(sent))}
+
+    def fake_ensure_created(job_id, wait_timeout=0):
+        return False
+
+    old_send = app.send_wecom_text
+    old_ensure_created = app.ensure_wecom_created_notified
+    old_schedule_retry = app.schedule_wecom_notification_retry
+    retries = []
+    try:
+        app.WECOM_CREATED_WAIT_TIMEOUT = 0.01
+        app.send_wecom_text = fake_send
+        app.ensure_wecom_created_notified = fake_ensure_created
+        app.schedule_wecom_notification_retry = lambda job_id, kind, delays=None: retries.append((job_id, kind))
+
+        app.notify_wecom_job_completion(job.copy())
+
+        stored = next(j for j in app.jobs if j["id"] == "created-timeout-continue")
+        assert len(sent) == 2
+        assert "开始下载" in sent[0]
+        assert "下载完成" in sent[1]
+        assert ("created-timeout-continue", "created") in retries
+        assert stored["wecom_started_notified"] is True
+        assert stored["wecom_completion_notified"] is True
+    finally:
+        app.WECOM_CREATED_WAIT_TIMEOUT = old_created_wait
+        app.send_wecom_text = old_send
+        app.ensure_wecom_created_notified = old_ensure_created
+        app.schedule_wecom_notification_retry = old_schedule_retry
 
 
 if __name__ == "__main__":
@@ -413,6 +500,8 @@ if __name__ == "__main__":
         test_fast_done_retry_keeps_three_notifications_only_once_each,
         test_schedule_wecom_notification_retry_deduplicates_same_job_and_kind,
         test_create_download_job_does_not_premark_created_notified,
+        test_create_download_job_triggers_created_notification_async,
+        test_completion_continues_when_created_wait_times_out,
         test_wecom_client_error_details_for_invalid_touser,
     ]
     for test in tests:

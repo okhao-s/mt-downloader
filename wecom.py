@@ -123,11 +123,18 @@ class WeComCrypto:
 
 
 class WeComClient:
-    def __init__(self, corp_id: str, agent_id: str | int, secret: str, timeout: int = 10):
+    def __init__(self, corp_id: str, agent_id: str | int, secret: str, timeout: int | float = 10, connect_timeout: int | float | None = 3.05, read_timeout: int | float | None = None):
         self.corp_id = str(corp_id or "")
         self.agent_id = int(agent_id)
         self.secret = str(secret or "")
-        self.timeout = timeout
+        self.timeout = float(timeout)
+        self.connect_timeout = float(connect_timeout) if connect_timeout is not None else None
+        self.read_timeout = float(read_timeout) if read_timeout is not None else self.timeout
+        self.request_timeout = (
+            (self.connect_timeout, self.read_timeout)
+            if self.connect_timeout is not None and self.read_timeout is not None
+            else self.timeout
+        )
         self._token = None
         self._token_expire_at = 0.0
         self._lock = threading.Lock()
@@ -138,7 +145,7 @@ class WeComClient:
             resp = requests.get(
                 WECOM_TOKEN_URL,
                 params={"corpid": self.corp_id, "corpsecret": self.secret},
-                timeout=self.timeout,
+                timeout=self.request_timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -185,7 +192,7 @@ class WeComClient:
                     WECOM_SEND_MESSAGE_URL,
                     params={"access_token": access_token},
                     json=payload,
-                    timeout=self.timeout,
+                    timeout=self.request_timeout,
                 )
                 resp.raise_for_status()
                 return resp.json()
