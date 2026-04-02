@@ -11,6 +11,13 @@ def reset_jobs():
 
 def sample_job(job_id="job1", status="queued"):
     now = app.iso_now()
+    status_text = {
+        "queued": "排队中",
+        "downloading": "开始下载",
+        "done": "下载完成",
+        "failed": "下载失败",
+    }.get(status, status)
+    progress = {"queued": 0, "downloading": 8, "done": 100, "failed": 100}.get(status, 0)
     return {
         "id": job_id,
         "source_url": "https://example.com/v.mp4",
@@ -24,8 +31,8 @@ def sample_job(job_id="job1", status="queued"):
         "finished_at": None,
         "proxy": "",
         "status": status,
-        "status_text": "排队中" if status == "queued" else "下载完成",
-        "progress": 0 if status == "queued" else 100,
+        "status_text": status_text,
+        "progress": progress,
         "title": "超短视频",
         "platform": "douyin",
         "error": "",
@@ -36,172 +43,128 @@ def sample_job(job_id="job1", status="queued"):
         "extractor": "test",
         "request_payload": {},
         "wecom_to_user": "zhangsan",
-        "wecom_created_notified": False,
-        "wecom_created_notified_at": None,
-        "wecom_created_notifying": False,
-        "wecom_created_retry_scheduled": False,
         "wecom_started_notified": False,
         "wecom_started_notified_at": None,
         "wecom_started_notifying": False,
-        "wecom_started_retry_scheduled": False,
-        "wecom_completion_notified": False,
-        "wecom_completion_notified_at": None,
-        "wecom_completion_notifying": False,
-        "wecom_completion_retry_scheduled": False,
+        "wecom_done_notified": False,
+        "wecom_done_notified_at": None,
+        "wecom_done_notifying": False,
+        "wecom_failed_notified": False,
+        "wecom_failed_notified_at": None,
+        "wecom_failed_notifying": False,
     }
 
 
-def test_created_notify_marks_only_after_success():
+def test_started_notify_marks_only_after_success():
     reset_jobs()
-    job = sample_job("created-ok", status="queued")
+    job = sample_job("started-ok", status="downloading")
     app.add_job(job)
 
     calls = []
     app.send_wecom_text = lambda to_user, content: calls.append((to_user, content)) or {"msgid": "1"}
 
-    app.notify_wecom_job_created(job.copy())
+    app.notify_wecom_job_started(job.copy())
 
-    stored = next(j for j in app.jobs if j["id"] == "created-ok")
+    stored = next(j for j in app.jobs if j["id"] == "started-ok")
     assert len(calls) == 1
-    assert stored["wecom_created_notified"] is True
-    assert stored["wecom_created_notified_at"]
+    assert "开始下载" in calls[0][1]
+    assert stored["wecom_started_notified"] is True
+    assert stored["wecom_started_notified_at"]
 
 
-def test_created_notify_failure_does_not_mark_notified():
+def test_done_notify_marks_only_after_success():
     reset_jobs()
-    job = sample_job("created-fail", status="queued")
+    job = sample_job("done-ok", status="done")
+    app.add_job(job)
+
+    calls = []
+    app.send_wecom_text = lambda to_user, content: calls.append((to_user, content)) or {"msgid": "1"}
+
+    app.notify_wecom_job_done(job.copy())
+
+    stored = next(j for j in app.jobs if j["id"] == "done-ok")
+    assert len(calls) == 1
+    assert "下载完成" in calls[0][1]
+    assert stored["wecom_done_notified"] is True
+    assert stored["wecom_done_notified_at"]
+
+
+def test_failed_notify_marks_only_after_success():
+    reset_jobs()
+    job = sample_job("failed-ok", status="failed")
+    job["error"] = "磁盘已满"
+    app.add_job(job)
+
+    calls = []
+    app.send_wecom_text = lambda to_user, content: calls.append((to_user, content)) or {"msgid": "1"}
+
+    app.notify_wecom_job_failed(job.copy())
+
+    stored = next(j for j in app.jobs if j["id"] == "failed-ok")
+    assert len(calls) == 1
+    assert "下载失败" in calls[0][1]
+    assert "磁盘已满" in calls[0][1]
+    assert stored["wecom_failed_notified"] is True
+    assert stored["wecom_failed_notified_at"]
+
+
+def test_started_notify_failure_does_not_mark_notified():
+    reset_jobs()
+    job = sample_job("started-fail", status="downloading")
     app.add_job(job)
 
     def boom(to_user, content):
         raise RuntimeError("send down")
 
     app.send_wecom_text = boom
-    app.notify_wecom_job_created(job.copy())
+    app.notify_wecom_job_started(job.copy())
 
-    stored = next(j for j in app.jobs if j["id"] == "created-fail")
-    assert stored["wecom_created_notified"] is False
-    assert stored["wecom_created_notified_at"] is None
-
-
-def test_started_and_completion_notifications_are_disabled():
-    reset_jobs()
-    sent = []
-    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
-
-    started_job = sample_job("started-off", status="downloading")
-    started_job["wecom_created_notified"] = True
-    started_job["wecom_created_notified_at"] = app.iso_now()
-    app.add_job(started_job)
-    app.notify_wecom_job_started(started_job.copy())
-
-    done_job = sample_job("done-off", status="done")
-    done_job["wecom_created_notified"] = True
-    done_job["wecom_created_notified_at"] = app.iso_now()
-    app.add_job(done_job)
-    app.notify_wecom_job_completion(done_job.copy())
-
-    started_stored = next(j for j in app.jobs if j["id"] == "started-off")
-    done_stored = next(j for j in app.jobs if j["id"] == "done-off")
-    assert sent == []
-    assert started_stored["wecom_started_notified"] is False
-    assert done_stored["wecom_completion_notified"] is False
-
-
-def test_update_job_does_not_trigger_started_or_completion_notifications():
-    reset_jobs()
-    sent = []
-    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
-
-    job = sample_job("status-flow-off", status="queued")
-    job["wecom_created_notified"] = True
-    job["wecom_created_notified_at"] = app.iso_now()
-    app.add_job(job)
-
-    app.update_job("status-flow-off", status="downloading", progress=8, status_text="开始下载", started_at=app.iso_now())
-    app.update_job("status-flow-off", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
-
-    stored = next(j for j in app.jobs if j["id"] == "status-flow-off")
-    assert sent == []
+    stored = next(j for j in app.jobs if j["id"] == "started-fail")
     assert stored["wecom_started_notified"] is False
-    assert stored["wecom_completion_notified"] is False
+    assert stored["wecom_started_notified_at"] is None
 
 
-def test_schedule_wecom_notification_retry_only_accepts_created():
+def test_update_job_triggers_started_done_failed_once_each():
     reset_jobs()
-    job = sample_job("retry-dedupe", status="done")
+    sent = []
+    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
+
+    job = sample_job("status-flow", status="queued")
     app.add_job(job)
 
-    calls = []
-    old_thread = app.threading.Thread
+    app.update_job("status-flow", status="downloading", progress=8, status_text="开始下载", started_at=app.iso_now())
+    app.update_job("status-flow", status="downloading", progress=20, status_text="已下载 20%")
+    app.update_job("status-flow", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
+    app.update_job("status-flow", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
 
-    class FakeThread:
-        def __init__(self, target=None, name=None, daemon=None):
-            self.target = target
-            self.name = name
-            self.daemon = daemon
-
-        def start(self):
-            calls.append(self.name)
-
-    try:
-        app.threading.Thread = FakeThread
-        app.schedule_wecom_notification_retry("retry-dedupe", "completion", delays=(0.01,))
-        app.schedule_wecom_notification_retry("retry-dedupe", "started", delays=(0.01,))
-        app.schedule_wecom_notification_retry("retry-dedupe", "created", delays=(0.01,))
-        stored = next(j for j in app.jobs if j["id"] == "retry-dedupe")
-        assert calls == ["wecom-retry-created-retry-"]
-        assert stored["wecom_created_retry_scheduled"] is True
-        assert stored["wecom_started_retry_scheduled"] is False
-        assert stored["wecom_completion_retry_scheduled"] is False
-    finally:
-        app.threading.Thread = old_thread
+    stored = next(j for j in app.jobs if j["id"] == "status-flow")
+    assert len(sent) == 2
+    assert "开始下载" in sent[0]
+    assert "下载完成" in sent[1]
+    assert stored["wecom_started_notified"] is True
+    assert stored["wecom_done_notified"] is True
+    assert stored["wecom_failed_notified"] is False
 
 
-
-def test_create_download_job_does_not_premark_created_notified():
+def test_update_job_triggers_failed_notification_once():
     reset_jobs()
+    sent = []
+    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
 
-    old_discover_stream = app.discover_stream
-    old_choose_stream_url = app.choose_stream_url
-    old_route_proxy_for_url = app.route_proxy_for_url
-    old_resolve_request_proxy = app.resolve_request_proxy
-    old_resolve_site_cookies_path = app.resolve_site_cookies_path
-    old_load_config = app.load_config
-    old_download_executor = app.download_executor
-    old_trigger = app.trigger_wecom_notification_async
+    job = sample_job("status-fail", status="queued")
+    app.add_job(job)
 
-    class DummyExecutor:
-        def submit(self, *args, **kwargs):
-            return None
+    app.update_job("status-fail", status="failed", progress=100, status_text="下载失败", error="源站超时", finished_at=app.iso_now())
+    app.update_job("status-fail", status="failed", progress=100, status_text="下载失败", error="源站超时", finished_at=app.iso_now())
 
-    try:
-        app.discover_stream = lambda *args, **kwargs: {"title": "标题", "streams": [{"url": "https://example.com/video.mp4"}], "extractor": "test"}
-        app.choose_stream_url = lambda info, stream_url, stream_index: "https://example.com/video.mp4"
-        app.route_proxy_for_url = lambda *args, **kwargs: ""
-        app.resolve_request_proxy = lambda *args, **kwargs: ""
-        app.resolve_site_cookies_path = lambda *args, **kwargs: None
-        app.load_config = lambda: {}
-        app.download_executor = DummyExecutor()
-        app.trigger_wecom_notification_async = lambda *args, **kwargs: None
-
-        payload = app.DownloadPayload(url="https://example.com/post/1", wecom_to_user="zhangsan")
-        job = app.create_download_job(payload)
-
-        assert job["wecom_created_notified"] is False
-        assert job["wecom_created_notified_at"] is None
-        assert job["wecom_created_retry_scheduled"] is False
-    finally:
-        app.discover_stream = old_discover_stream
-        app.choose_stream_url = old_choose_stream_url
-        app.route_proxy_for_url = old_route_proxy_for_url
-        app.resolve_request_proxy = old_resolve_request_proxy
-        app.resolve_site_cookies_path = old_resolve_site_cookies_path
-        app.load_config = old_load_config
-        app.download_executor = old_download_executor
-        app.trigger_wecom_notification_async = old_trigger
+    stored = next(j for j in app.jobs if j["id"] == "status-fail")
+    assert len(sent) == 1
+    assert "下载失败" in sent[0]
+    assert "源站超时" in sent[0]
+    assert stored["wecom_failed_notified"] is True
 
 
-def test_create_download_job_triggers_created_notification_async():
+def test_create_download_job_has_only_started_done_failed_flags_and_no_created_trigger():
     reset_jobs()
 
     old_discover_stream = app.discover_stream
@@ -232,7 +195,11 @@ def test_create_download_job_triggers_created_notification_async():
         payload = app.DownloadPayload(url="https://example.com/post/2", wecom_to_user="zhangsan")
         job = app.create_download_job(payload)
 
-        assert calls == [("created", job["id"], None)]
+        assert "wecom_created_notified" not in job
+        assert job["wecom_started_notified"] is False
+        assert job["wecom_done_notified"] is False
+        assert job["wecom_failed_notified"] is False
+        assert calls == []
     finally:
         app.discover_stream = old_discover_stream
         app.choose_stream_url = old_choose_stream_url
@@ -242,33 +209,6 @@ def test_create_download_job_triggers_created_notification_async():
         app.load_config = old_load_config
         app.download_executor = old_download_executor
         app.trigger_wecom_notification_async = old_trigger
-
-
-def test_created_retry_backfills_after_job_left_done():
-    reset_jobs()
-    sent = []
-    old_delays = app.WECOM_NOTIFY_RETRY_DELAYS
-
-    def fake_send(to_user, content):
-        sent.append(content)
-        return {"msgid": str(len(sent))}
-
-    try:
-        app.WECOM_NOTIFY_RETRY_DELAYS = (0.01,)
-        app.send_wecom_text = fake_send
-        job = sample_job("created-backfill-done", status="done")
-        app.add_job(job)
-
-        app.schedule_wecom_notification_retry(job["id"], "created")
-        app.time.sleep(0.05)
-
-        stored = next(j for j in app.jobs if j["id"] == "created-backfill-done")
-        assert len(sent) == 1
-        assert "收到任务" in sent[0]
-        assert stored["wecom_created_notified"] is True
-        assert stored["wecom_created_retry_scheduled"] is False
-    finally:
-        app.WECOM_NOTIFY_RETRY_DELAYS = old_delays
 
 
 def test_wecom_client_error_details_for_invalid_touser():
@@ -301,14 +241,13 @@ def test_wecom_client_error_details_for_invalid_touser():
 
 if __name__ == "__main__":
     tests = [
-        test_created_notify_marks_only_after_success,
-        test_created_notify_failure_does_not_mark_notified,
-        test_started_and_completion_notifications_are_disabled,
-        test_update_job_does_not_trigger_started_or_completion_notifications,
-        test_schedule_wecom_notification_retry_only_accepts_created,
-        test_create_download_job_does_not_premark_created_notified,
-        test_create_download_job_triggers_created_notification_async,
-        test_created_retry_backfills_after_job_left_done,
+        test_started_notify_marks_only_after_success,
+        test_done_notify_marks_only_after_success,
+        test_failed_notify_marks_only_after_success,
+        test_started_notify_failure_does_not_mark_notified,
+        test_update_job_triggers_started_done_failed_once_each,
+        test_update_job_triggers_failed_notification_once,
+        test_create_download_job_has_only_started_done_failed_flags_and_no_created_trigger,
         test_wecom_client_error_details_for_invalid_touser,
     ]
     for test in tests:

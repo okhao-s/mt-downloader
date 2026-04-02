@@ -35,10 +35,12 @@ def sample_job(job_id="job-delete", status="queued"):
         "extractor": "test",
         "request_payload": {},
         "wecom_to_user": "",
-        "wecom_created_notified": False,
-        "wecom_created_notified_at": None,
-        "wecom_completion_notified": False,
-        "wecom_completion_notified_at": None,
+        "wecom_started_notified": False,
+        "wecom_started_notified_at": None,
+        "wecom_done_notified": False,
+        "wecom_done_notified_at": None,
+        "wecom_failed_notified": False,
+        "wecom_failed_notified_at": None,
     }
 
 

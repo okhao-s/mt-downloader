@@ -61,12 +61,8 @@ jobs: list[dict] = []
 jobs_lock = threading.Lock()
 MAX_CONCURRENT_DOWNLOADS = 3
 download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="mt-download")
-WECOM_FINAL_STATUSES = {"done"}
+WECOM_FINAL_STATUSES = {"done", "failed"}
 CONFIG_KEEP_SENTINEL = "__KEEP__"
-WECOM_NOTIFY_RETRY_DELAYS = (0.5, 1.0, 2.0)
-WECOM_NOTIFY_POLL_INTERVAL = 0.1
-WECOM_CREATED_WAIT_TIMEOUT = 0.8
-WECOM_STARTED_WAIT_TIMEOUT = 1.2
 WECOM_TITLE_MAX_LEN = 80
 WECOM_FILE_MAX_LEN = 100
 WECOM_STATUS_MAX_LEN = 120
@@ -194,14 +190,19 @@ def send_wecom_text(to_user: str, content: str) -> dict:
 
 def trigger_wecom_notification_async(kind: str, job: dict | None = None, job_id: str | None = None):
     active_job_id = str(job_id or (job or {}).get("id") or "").strip()
-    if not active_job_id or kind != "created":
+    if not active_job_id or kind not in {"started", "done", "failed"}:
         return
 
     def worker():
         snapshot = get_job_snapshot(active_job_id) or dict(job or {})
         if not snapshot:
             return
-        notify_wecom_job_created(snapshot)
+        if kind == "started":
+            notify_wecom_job_started(snapshot)
+        elif kind == "done":
+            notify_wecom_job_done(snapshot)
+        else:
+            notify_wecom_job_failed(snapshot)
 
     threading.Thread(target=worker, name=f"wecom-notify-{kind}-{active_job_id[:6]}", daemon=True).start()
 
@@ -302,47 +303,17 @@ async def save_uploaded_cookie_file(file: UploadFile, target_path: Path, config_
     }
 
 
-def build_wecom_job_created_feedback(job: dict) -> str:
-    prefix = build_wecom_prefix(job.get("platform"))
-    display_name = resolve_job_display_name(job)
-    lines = [f"{prefix} 收到任务"]
-    lines.append(format_wecom_field("文件", display_name, WECOM_FILE_MAX_LEN) or f"文件：{prettify_platform(job.get('platform'))} 任务")
-    if job.get("id"):
-        lines.append(f"任务ID：{job.get('id')}")
-    source = shorten_wecom_url(job.get("source_url"))
-    if source:
-        lines.append(f"来源：{source}")
-    return compact_wecom_message(lines)
-
-
-def build_wecom_job_started_feedback(job: dict) -> str:
-    prefix = build_wecom_prefix(job.get("platform"))
-    display_name = resolve_job_display_name(job)
-    lines = [f"{prefix} 开始下载"]
-    lines.append(format_wecom_field("文件", display_name, WECOM_FILE_MAX_LEN) or f"文件：{prettify_platform(job.get('platform'))} 任务")
-    if job.get("id"):
-        lines.append(f"任务ID：{job.get('id')}")
-    status = str(job.get("status") or "").strip().lower()
-    status_text = clean_wecom_text(job.get("status_text"))
-    if status == "downloading" and status_text:
-        lines.append(format_wecom_field("状态", status_text, WECOM_STATUS_MAX_LEN) or "状态：任务已进入下载阶段")
-    else:
-        lines.append("状态：任务已进入下载阶段")
-    return compact_wecom_message(lines)
-
-
-def build_wecom_job_completion_feedback(job: dict) -> str:
-    status = str(job.get("status") or "").strip().lower()
+def build_wecom_job_status_feedback(job: dict, kind: str) -> str:
     prefix = build_wecom_prefix(job.get("platform"))
     title = clean_wecom_text(job.get("title"))
     output = clean_wecom_text(job.get("output"))
     display_name = resolve_job_display_name(job)
-    status_label = {
+    status_line = {
+        "started": "开始下载",
         "done": "下载完成",
         "failed": "下载失败",
-        "cancelled": "任务已取消",
-    }.get(status, f"任务状态：{status or 'unknown'}")
-    lines = [f"{prefix} {status_label}"]
+    }.get(kind, "任务状态更新")
+    lines = [f"{prefix} {status_line}"]
     if title and output and title != output:
         lines.append(format_wecom_field("标题", title, WECOM_TITLE_MAX_LEN) or "")
         lines.append(format_wecom_field("文件", output, WECOM_FILE_MAX_LEN) or "")
@@ -350,13 +321,31 @@ def build_wecom_job_completion_feedback(job: dict) -> str:
         lines.append(format_wecom_field("文件", display_name, WECOM_FILE_MAX_LEN) or f"文件：{prettify_platform(job.get('platform'))} 任务")
     if job.get("id"):
         lines.append(f"任务ID：{job.get('id')}")
-    if status == "failed":
+    if kind == "started":
+        status_text = clean_wecom_text(job.get("status_text"))
+        if status_text:
+            lines.append(format_wecom_field("状态", status_text, WECOM_STATUS_MAX_LEN) or "状态：任务已进入下载阶段")
+        else:
+            lines.append("状态：任务已进入下载阶段")
+    elif kind == "failed":
         error = clean_wecom_text(job.get("error") or job.get("status_text") or "未知原因")
         lines.append(format_wecom_field("原因", error, WECOM_ERROR_MAX_LEN) or "原因：未知原因")
     source = shorten_wecom_url(job.get("source_url"))
-    if source and not output:
+    if source and kind == "failed" and not output:
         lines.append(f"来源：{source}")
     return compact_wecom_message(lines)
+
+
+def build_wecom_job_started_feedback(job: dict) -> str:
+    return build_wecom_job_status_feedback(job, "started")
+
+
+def build_wecom_job_done_feedback(job: dict) -> str:
+    return build_wecom_job_status_feedback(job, "done")
+
+
+def build_wecom_job_failed_feedback(job: dict) -> str:
+    return build_wecom_job_status_feedback(job, "failed")
 
 
 def claim_wecom_notification(job_id: str | None, kind: str) -> dict | None:
@@ -406,140 +395,52 @@ def get_job_snapshot(job_id: str | None) -> dict | None:
     return None
 
 
-def mark_wecom_retry_scheduled(job_id: str | None, kind: str, scheduled: bool) -> bool:
-    if not job_id:
-        return False
-    retry_key = f"wecom_{kind}_retry_scheduled"
-    with jobs_lock:
-        for job in jobs:
-            if job.get("id") != job_id:
-                continue
-            if is_job_hidden(job):
-                return False
-            current = bool(job.get(retry_key))
-            if scheduled:
-                if current:
-                    return False
-                job[retry_key] = True
-            else:
-                job[retry_key] = False
-            job.setdefault("updated_at", iso_now())
-            return True
-    return False
-
-
-def should_backfill_wecom_created(job: dict | None) -> bool:
+def should_notify_wecom(job: dict | None, kind: str) -> bool:
     if not job or is_job_hidden(job):
         return False
     if not str(job.get("wecom_to_user") or "").strip():
         return False
-    if job.get("wecom_created_notified"):
-        return False
     status = str(job.get("status") or "").strip().lower()
-    return status in {"queued", "downloading", *WECOM_FINAL_STATUSES}
-
-
-def ensure_wecom_notified(job_id: str | None, kind: str, wait_timeout: float = 5.0) -> bool:
-    if not job_id:
-        return False
-    wait_timeout = max(0.0, float(wait_timeout or 0.0))
-    deadline = time.time() + wait_timeout
-    attempted_trigger = False
-    trigger = notify_wecom_job_created if kind == "created" else notify_wecom_job_started if kind == "started" else None
-    if not trigger:
-        return False
-    flag_key = f"wecom_{kind}_notified"
-    inflight_key = f"wecom_{kind}_notifying"
-    while True:
-        snapshot = get_job_snapshot(job_id)
-        if not snapshot:
-            return False
-        if snapshot.get(flag_key):
-            return True
-        if not snapshot.get("wecom_to_user"):
-            return False
-        if not snapshot.get(inflight_key):
-            if attempted_trigger:
-                return False
-            attempted_trigger = True
-            trigger(snapshot)
-            if wait_timeout <= 0:
-                return bool((get_job_snapshot(job_id) or {}).get(flag_key))
-            continue
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            print(f"[wecom] ensure_{kind}_notified timeout: job_id={job_id} wait_timeout={wait_timeout}")
-            return False
-        time.sleep(min(WECOM_NOTIFY_POLL_INTERVAL, remaining))
-
-
-def ensure_wecom_created_notified(job_id: str | None, wait_timeout: float = WECOM_CREATED_WAIT_TIMEOUT) -> bool:
-    return ensure_wecom_notified(job_id, "created", wait_timeout=wait_timeout)
-
-
-def ensure_wecom_started_notified(job_id: str | None, wait_timeout: float = WECOM_STARTED_WAIT_TIMEOUT) -> bool:
+    if kind == "started":
+        return status == "downloading" and not job.get("wecom_started_notified")
+    if kind == "done":
+        return status == "done" and not job.get("wecom_done_notified")
+    if kind == "failed":
+        return status == "failed" and not job.get("wecom_failed_notified")
     return False
 
 
-def schedule_wecom_notification_retry(job_id: str | None, kind: str, delays: tuple[float, ...] | None = None):
-    job_id = str(job_id or "").strip()
-    if not job_id or kind != "created":
-        return
-    if not mark_wecom_retry_scheduled(job_id, kind, True):
-        return
-    retry_delays = tuple(delays or WECOM_NOTIFY_RETRY_DELAYS)
-
-    def worker():
-        try:
-            for delay in retry_delays:
-                time.sleep(max(0.0, delay))
-                snapshot = get_job_snapshot(job_id)
-                if not snapshot or is_job_hidden(snapshot):
-                    return
-                if not snapshot.get("wecom_to_user"):
-                    return
-                if snapshot.get("wecom_created_notified"):
-                    return
-                if not should_backfill_wecom_created(snapshot):
-                    return
-                notify_wecom_job_created(snapshot)
-                latest = get_job_snapshot(job_id)
-                if not latest or latest.get("wecom_created_notified"):
-                    return
-        finally:
-            mark_wecom_retry_scheduled(job_id, kind, False)
-
-    threading.Thread(target=worker, name=f"wecom-retry-{kind}-{job_id[:6]}", daemon=True).start()
-
-
-def notify_wecom_job_created(job: dict):
+def notify_wecom_job_status(job: dict, kind: str, feedback_builder):
     job_id = str(job.get("id") or "").strip()
     snapshot = get_job_snapshot(job_id) or job.copy()
-    if not should_backfill_wecom_created(snapshot):
+    if not should_notify_wecom(snapshot, kind):
         return
-    claimed_job = claim_wecom_notification(job_id, "created")
+    claimed_job = claim_wecom_notification(job_id, kind)
     if not claimed_job:
         return
     to_user = str(claimed_job.get("wecom_to_user") or "").strip()
     if not to_user:
-        finish_wecom_notification(job_id, "created", success=False)
+        finish_wecom_notification(job_id, kind, success=False)
         return
     try:
-        send_wecom_text(to_user, build_wecom_job_created_feedback(claimed_job.copy()))
+        send_wecom_text(to_user, feedback_builder(claimed_job.copy()))
     except Exception as exc:
-        print(f"[wecom] job_created notify failed: job_id={job_id} to={to_user} error={exc}")
-        finish_wecom_notification(job_id, "created", success=False)
-        schedule_wecom_notification_retry(job_id, "created")
+        print(f"[wecom] job_{kind} notify failed: job_id={job_id} to={to_user} error={exc}")
+        finish_wecom_notification(job_id, kind, success=False)
         return
-    finish_wecom_notification(job_id, "created", success=True)
+    finish_wecom_notification(job_id, kind, success=True)
 
 
 def notify_wecom_job_started(job: dict):
-    return
+    notify_wecom_job_status(job, "started", build_wecom_job_started_feedback)
 
 
-def notify_wecom_job_completion(job: dict):
-    return
+def notify_wecom_job_done(job: dict):
+    notify_wecom_job_status(job, "done", build_wecom_job_done_feedback)
+
+
+def notify_wecom_job_failed(job: dict):
+    notify_wecom_job_status(job, "failed", build_wecom_job_failed_feedback)
 
 
 def handle_wecom_download_message(msg: dict):
@@ -573,21 +474,27 @@ def is_job_hidden(job: dict) -> bool:
 
 
 def update_job(job_id: str, **updates):
-    notify_created_job = None
+    notify_jobs: list[tuple[str, dict]] = []
     with jobs_lock:
         for job in jobs:
             if job.get("id") == job_id:
+                previous_status = str(job.get("status") or "").strip().lower()
                 updates.setdefault("updated_at", iso_now())
                 job.update(updates)
-                status = str(job.get("status") or "").strip().lower()
-                if status == "queued" and job.get("wecom_to_user") and not job.get("wecom_created_notified"):
-                    notify_created_job = job.copy()
+                current_status = str(job.get("status") or "").strip().lower()
+                if current_status != previous_status and job.get("wecom_to_user"):
+                    if current_status == "downloading" and not job.get("wecom_started_notified"):
+                        notify_jobs.append(("started", job.copy()))
+                    elif current_status == "done" and not job.get("wecom_done_notified"):
+                        notify_jobs.append(("done", job.copy()))
+                    elif current_status == "failed" and not job.get("wecom_failed_notified"):
+                        notify_jobs.append(("failed", job.copy()))
                 result = job
                 break
         else:
             return None
-    if notify_created_job:
-        notify_wecom_job_created(notify_created_job)
+    for kind, notify_job in notify_jobs:
+        trigger_wecom_notification_async(kind, job=notify_job)
     return result
 
 
@@ -1129,22 +1036,17 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "extractor": extractor,
         "request_payload": payload.model_dump(),
         "wecom_to_user": str(payload.wecom_to_user or "").strip(),
-        "wecom_created_notified": False,
-        "wecom_created_notified_at": None,
-        "wecom_created_notifying": False,
-        "wecom_created_retry_scheduled": False,
         "wecom_started_notified": False,
         "wecom_started_notified_at": None,
         "wecom_started_notifying": False,
-        "wecom_started_retry_scheduled": False,
-        "wecom_completion_notified": False,
-        "wecom_completion_notified_at": None,
-        "wecom_completion_notifying": False,
-        "wecom_completion_retry_scheduled": False,
+        "wecom_done_notified": False,
+        "wecom_done_notified_at": None,
+        "wecom_done_notifying": False,
+        "wecom_failed_notified": False,
+        "wecom_failed_notified_at": None,
+        "wecom_failed_notifying": False,
     }
     add_job(job)
-    if job.get("wecom_to_user"):
-        trigger_wecom_notification_async("created", job=job.copy())
 
     download_executor.submit(
         run_download_job,

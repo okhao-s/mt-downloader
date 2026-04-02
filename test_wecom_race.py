@@ -3,7 +3,6 @@ import app
 sent = []
 app.send_wecom_text = lambda to_user, content: sent.append((to_user, content)) or {"msgid": str(len(sent))}
 
-# reset in-memory jobs for isolated test
 with app.jobs_lock:
     app.jobs.clear()
 
@@ -32,18 +31,19 @@ job = {
     "extractor": "test",
     "request_payload": {},
     "wecom_to_user": "zhangsan",
-    "wecom_created_notified": False,
-    "wecom_created_notified_at": None,
-    "wecom_created_notifying": False,
-    "wecom_completion_notified": False,
-    "wecom_completion_notified_at": None,
-    "wecom_completion_notifying": False,
+    "wecom_started_notified": False,
+    "wecom_started_notified_at": None,
+    "wecom_started_notifying": False,
+    "wecom_done_notified": False,
+    "wecom_done_notified_at": None,
+    "wecom_done_notifying": False,
+    "wecom_failed_notified": False,
+    "wecom_failed_notified_at": None,
+    "wecom_failed_notifying": False,
 }
 
 app.add_job(job)
-# simulate real create point: immediately attach context + fire creation on visible queued job
-app.notify_wecom_job_created(job.copy())
-# simulate ultra-fast terminal transition right after create
+app.update_job("racejob1", status="downloading", progress=8, status_text="开始下载", started_at=app.iso_now())
 app.update_job("racejob1", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
 
 print({
