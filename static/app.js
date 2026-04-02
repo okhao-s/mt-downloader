@@ -202,9 +202,13 @@ function updateBilibiliCookiesHint(data = {}) {
 function updateWecomHints(data = {}) {
   const status = $('wecom-status-hint');
   if (status) {
-    status.textContent = data?.wecom_ready
-      ? '企业微信配置已就绪，可以去企业微信里校验回调并开始收消息。'
-      : '企业微信配置未完成。把参数填完整后再保存。';
+    if (data?.wecom_forward_enabled) {
+      status.textContent = '已启用自定义企业微信转发：started/done/failed 主动通知会优先走转发地址。';
+    } else {
+      status.textContent = data?.wecom_ready
+        ? '企业微信配置已就绪，可以去企业微信里校验回调并开始收消息。'
+        : '企业微信配置未完成。把参数填完整后再保存。';
+    }
   }
 
   const secretHint = $('wecom-secret-hint');
@@ -226,6 +230,13 @@ function updateWecomHints(data = {}) {
     aesHint.textContent = data?.wecom_encoding_aes_key_masked
       ? `已保存：${data.wecom_encoding_aes_key_masked}。留空并保存可清空。`
       : '未保存。EncodingAESKey 只在保存时写入，接口返回会做掩码。';
+  }
+
+  const forwardTokenHint = $('wecom-forward-token-hint');
+  if (forwardTokenHint) {
+    forwardTokenHint.textContent = data?.wecom_forward_token_masked
+      ? `已保存：${data.wecom_forward_token_masked}。留空并保存可清空。`
+      : '未保存。转发 Token 只在保存时写入，接口返回会做掩码。';
   }
 }
 
@@ -263,6 +274,12 @@ function applyConfigToForm(data = {}) {
   }
   if ($('cfg_wecom_callback_url')) {
     $('cfg_wecom_callback_url').value = data?.wecom_callback_url || '';
+  }
+  if ($('cfg_wecom_forward_url')) {
+    $('cfg_wecom_forward_url').value = data?.wecom_forward_url || '';
+  }
+  if ($('cfg_wecom_forward_token')) {
+    $('cfg_wecom_forward_token').value = '';
   }
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
@@ -621,6 +638,8 @@ async function saveConfig() {
       wecom_token: wecomTokenInput === '' ? '__KEEP__' : wecomTokenInput,
       wecom_encoding_aes_key: wecomAesInput === '' ? '__KEEP__' : wecomAesInput,
       wecom_callback_url: $('cfg_wecom_callback_url')?.value.trim() || '',
+      wecom_forward_url: $('cfg_wecom_forward_url')?.value.trim() || '',
+      wecom_forward_token: wecomForwardTokenInput === '' ? '__KEEP__' : wecomForwardTokenInput,
     });
     applyConfigToForm(data);
     showConfigSummary(data);

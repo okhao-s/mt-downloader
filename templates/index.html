@@ -228,6 +228,18 @@
             <span>Callback URL（可选保存）</span>
             <input id="cfg_wecom_callback_url" placeholder="https://你的域名/api/wecom/callback">
           </label>
+
+          <label class="field field-wide">
+            <span>自定义企业微信转发 URL</span>
+            <input id="cfg_wecom_forward_url" placeholder="https://your-forward.example.com/wecom/notify">
+            <small class="field-hint">只影响 started / done / failed 三类主动通知；已配置时优先走这里，未配置时仍直连企业微信。</small>
+          </label>
+
+          <label class="field field-wide">
+            <span>自定义企业微信转发 Token</span>
+            <input id="cfg_wecom_forward_token" type="password" placeholder="保存时写入；留空并保存可清空">
+            <small id="wecom-forward-token-hint" class="field-hint">未保存。转发 Token 只在保存时写入，接口返回会做掩码。</small>
+          </label>
         </div>
         <div class="action-row">
           <button class="btn btn-secondary" onclick="saveConfig()">保存设置</button>

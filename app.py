@@ -179,10 +179,72 @@ def get_wecom_client(cfg: dict) -> WeComClient:
     )
 
 
+def get_wecom_forward_url(cfg: dict | None = None) -> str:
+    active_cfg = cfg or load_config()
+    return str(active_cfg.get("wecom_forward_url") or os.getenv("WECOM_FORWARD_URL") or "").strip().rstrip("/")
+
+
+def get_wecom_forward_token(cfg: dict | None = None) -> str:
+    active_cfg = cfg or load_config()
+    return str(active_cfg.get("wecom_forward_token") or os.getenv("WECOM_FORWARD_TOKEN") or "").strip()
+
+
+def is_wecom_forward_enabled(cfg: dict | None = None) -> bool:
+    return bool(get_wecom_forward_url(cfg))
+
+
+def build_wecom_forward_payload(job: dict, kind: str, to_user: str, content: str) -> dict:
+    status = str(job.get("status") or "").strip().lower() or kind
+    return {
+        "kind": kind,
+        "job_id": str(job.get("id") or "").strip(),
+        "to_user": str(to_user or "").strip(),
+        "content": str(content or "").strip(),
+        "title": clean_wecom_text(job.get("title") or job.get("output")),
+        "status": status,
+        "error": clean_wecom_text(job.get("error") or ""),
+        "source_url": clean_wecom_text(job.get("source_url") or ""),
+        "platform": clean_wecom_text(job.get("platform") or ""),
+        "output": clean_wecom_text(job.get("output") or ""),
+        "status_text": clean_wecom_text(job.get("status_text") or ""),
+    }
+
+
+def send_wecom_forward_notification(job: dict, kind: str, to_user: str, content: str, cfg: dict | None = None) -> dict:
+    active_cfg = cfg or load_config()
+    forward_url = get_wecom_forward_url(active_cfg)
+    if not forward_url:
+        raise RuntimeError("WECOM_FORWARD_URL 未配置")
+    headers = {}
+    forward_token = get_wecom_forward_token(active_cfg)
+    if forward_token:
+        headers["X-Wecom-Forward-Token"] = forward_token
+    payload = build_wecom_forward_payload(job, kind, to_user, content)
+    resp = requests.post(
+        forward_url,
+        headers=headers or None,
+        json=payload,
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok", True):
+        raise RuntimeError(data.get("detail") or str(data))
+    print(f"[wecom-forward] notify ok: kind={kind} job_id={payload['job_id']} to={to_user} msgid={data.get('msgid')}")
+    return data
+
+
+def send_wecom_job_notification(job: dict, kind: str, to_user: str, content: str) -> dict:
+    cfg = load_config()
+    if is_wecom_forward_enabled(cfg):
+        return send_wecom_forward_notification(job, kind, to_user, content, cfg=cfg)
+    return send_wecom_text(to_user, content)
+
+
 def send_wecom_text(to_user: str, content: str) -> dict:
+    target_user = str(to_user or "").strip()
     cfg = load_config()
     client = get_wecom_client(cfg)
-    target_user = str(to_user or "").strip()
     result = client.send_text(target_user, content)
     print(f"[wecom] send_text ok: to={target_user} msgid={result.get('msgid')}")
     return result
@@ -275,9 +337,11 @@ def enrich_config_view(cfg: dict) -> dict:
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
     cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
     cfg["wecom_ready"] = is_wecom_ready(cfg)
+    cfg["wecom_forward_enabled"] = is_wecom_forward_enabled(cfg)
     cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
     cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
     cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
+    cfg["wecom_forward_token_masked"] = mask_secret(cfg.get("wecom_forward_token"))
     return cfg
 
 
@@ -423,9 +487,10 @@ def notify_wecom_job_status(job: dict, kind: str, feedback_builder):
         finish_wecom_notification(job_id, kind, success=False)
         return
     try:
-        send_wecom_text(to_user, feedback_builder(claimed_job.copy()))
+        send_wecom_job_notification(claimed_job.copy(), kind, to_user, feedback_builder(claimed_job.copy()))
     except Exception as exc:
-        print(f"[wecom] job_{kind} notify failed: job_id={job_id} to={to_user} error={exc}")
+        route = "forward" if is_wecom_forward_enabled() else "direct"
+        print(f"[wecom] job_{kind} notify failed: route={route} job_id={job_id} to={to_user} error={exc}")
         finish_wecom_notification(job_id, kind, success=False)
         return
     finish_wecom_notification(job_id, kind, success=True)
@@ -717,6 +782,8 @@ class ConfigPayload(BaseModel):
     wecom_token: str | None = CONFIG_KEEP_SENTINEL
     wecom_encoding_aes_key: str | None = CONFIG_KEEP_SENTINEL
     wecom_callback_url: str | None = ""
+    wecom_forward_url: str | None = ""
+    wecom_forward_token: str | None = CONFIG_KEEP_SENTINEL
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1279,6 +1346,12 @@ def set_config(payload: ConfigPayload):
         cfg["wecom_encoding_aes_key"] = aes_key
 
     cfg["wecom_callback_url"] = str(payload.wecom_callback_url or "").strip()
+    cfg["wecom_forward_url"] = str(payload.wecom_forward_url or "").strip()
+
+    forward_token = str(payload.wecom_forward_token or "").strip()
+    if forward_token != CONFIG_KEEP_SENTINEL:
+        cfg["wecom_forward_token"] = forward_token
+
     save_config(cfg)
     return enrich_config_view(cfg)
 

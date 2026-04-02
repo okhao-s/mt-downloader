@@ -20,6 +20,8 @@ def test_set_config_keeps_wecom_secrets_when_blank_inputs_use_keep_sentinel():
                 "wecom_token": "old-token",
                 "wecom_encoding_aes_key": "A" * 43,
                 "wecom_callback_url": "https://example.com/api/wecom/callback",
+                "wecom_forward_url": "https://forward.example.com/wecom/notify",
+                "wecom_forward_token": "old-forward-token",
             })
 
             payload = app.ConfigPayload(
@@ -30,6 +32,8 @@ def test_set_config_keeps_wecom_secrets_when_blank_inputs_use_keep_sentinel():
                 wecom_token=app.CONFIG_KEEP_SENTINEL,
                 wecom_encoding_aes_key=app.CONFIG_KEEP_SENTINEL,
                 wecom_callback_url="https://example.com/api/wecom/callback",
+                wecom_forward_url="https://forward.example.com/wecom/notify",
+                wecom_forward_token=app.CONFIG_KEEP_SENTINEL,
             )
             app.set_config(payload)
             saved = json.loads(config_path.read_text(encoding="utf-8"))
@@ -37,6 +41,7 @@ def test_set_config_keeps_wecom_secrets_when_blank_inputs_use_keep_sentinel():
             assert saved["wecom_secret"] == "old-secret"
             assert saved["wecom_token"] == "old-token"
             assert saved["wecom_encoding_aes_key"] == "A" * 43
+            assert saved["wecom_forward_token"] == "old-forward-token"
         finally:
             core.CONFIG_PATH = old_app_path
 

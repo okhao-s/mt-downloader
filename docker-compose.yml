@@ -10,6 +10,9 @@ services:
     image: okhao/mt:local
     ports:
       - "9151:8080"
+    environment:
+      - WECOM_FORWARD_URL=${WECOM_FORWARD_URL:-}
+      - WECOM_FORWARD_TOKEN=${WECOM_FORWARD_TOKEN:-}
     volumes:
       - /root/docker/video:/downloads
       - ./data:/app/data

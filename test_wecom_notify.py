@@ -61,13 +61,17 @@ def test_started_notify_marks_only_after_success():
     app.add_job(job)
 
     calls = []
-    app.send_wecom_text = lambda to_user, content: calls.append((to_user, content)) or {"msgid": "1"}
-
-    app.notify_wecom_job_started(job.copy())
+    old_send = app.send_wecom_job_notification
+    try:
+        app.send_wecom_job_notification = lambda job, kind, to_user, content: calls.append((kind, to_user, content)) or {"msgid": "1"}
+        app.notify_wecom_job_started(job.copy())
+    finally:
+        app.send_wecom_job_notification = old_send
 
     stored = next(j for j in app.jobs if j["id"] == "started-ok")
     assert len(calls) == 1
-    assert "开始下载" in calls[0][1]
+    assert calls[0][0] == "started"
+    assert "开始下载" in calls[0][2]
     assert stored["wecom_started_notified"] is True
     assert stored["wecom_started_notified_at"]
 
@@ -78,13 +82,17 @@ def test_done_notify_marks_only_after_success():
     app.add_job(job)
 
     calls = []
-    app.send_wecom_text = lambda to_user, content: calls.append((to_user, content)) or {"msgid": "1"}
-
-    app.notify_wecom_job_done(job.copy())
+    old_send = app.send_wecom_job_notification
+    try:
+        app.send_wecom_job_notification = lambda job, kind, to_user, content: calls.append((kind, to_user, content)) or {"msgid": "1"}
+        app.notify_wecom_job_done(job.copy())
+    finally:
+        app.send_wecom_job_notification = old_send
 
     stored = next(j for j in app.jobs if j["id"] == "done-ok")
     assert len(calls) == 1
-    assert "下载完成" in calls[0][1]
+    assert calls[0][0] == "done"
+    assert "下载完成" in calls[0][2]
     assert stored["wecom_done_notified"] is True
     assert stored["wecom_done_notified_at"]
 
@@ -96,14 +104,18 @@ def test_failed_notify_marks_only_after_success():
     app.add_job(job)
 
     calls = []
-    app.send_wecom_text = lambda to_user, content: calls.append((to_user, content)) or {"msgid": "1"}
-
-    app.notify_wecom_job_failed(job.copy())
+    old_send = app.send_wecom_job_notification
+    try:
+        app.send_wecom_job_notification = lambda job, kind, to_user, content: calls.append((kind, to_user, content)) or {"msgid": "1"}
+        app.notify_wecom_job_failed(job.copy())
+    finally:
+        app.send_wecom_job_notification = old_send
 
     stored = next(j for j in app.jobs if j["id"] == "failed-ok")
     assert len(calls) == 1
-    assert "下载失败" in calls[0][1]
-    assert "磁盘已满" in calls[0][1]
+    assert calls[0][0] == "failed"
+    assert "下载失败" in calls[0][2]
+    assert "磁盘已满" in calls[0][2]
     assert stored["wecom_failed_notified"] is True
     assert stored["wecom_failed_notified_at"]
 
@@ -113,11 +125,15 @@ def test_started_notify_failure_does_not_mark_notified():
     job = sample_job("started-fail", status="downloading")
     app.add_job(job)
 
-    def boom(to_user, content):
+    def boom(job, kind, to_user, content):
         raise RuntimeError("send down")
 
-    app.send_wecom_text = boom
-    app.notify_wecom_job_started(job.copy())
+    old_send = app.send_wecom_job_notification
+    try:
+        app.send_wecom_job_notification = boom
+        app.notify_wecom_job_started(job.copy())
+    finally:
+        app.send_wecom_job_notification = old_send
 
     stored = next(j for j in app.jobs if j["id"] == "started-fail")
     assert stored["wecom_started_notified"] is False
@@ -127,20 +143,26 @@ def test_started_notify_failure_does_not_mark_notified():
 def test_update_job_triggers_started_done_failed_once_each():
     reset_jobs()
     sent = []
-    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
+    old_send = app.send_wecom_job_notification
+    try:
+        app.send_wecom_job_notification = lambda job, kind, to_user, content: sent.append((kind, content)) or {"msgid": str(len(sent))}
 
-    job = sample_job("status-flow", status="queued")
-    app.add_job(job)
+        job = sample_job("status-flow", status="queued")
+        app.add_job(job)
 
-    app.update_job("status-flow", status="downloading", progress=8, status_text="开始下载", started_at=app.iso_now())
-    app.update_job("status-flow", status="downloading", progress=20, status_text="已下载 20%")
-    app.update_job("status-flow", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
-    app.update_job("status-flow", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
+        app.update_job("status-flow", status="downloading", progress=8, status_text="开始下载", started_at=app.iso_now())
+        app.update_job("status-flow", status="downloading", progress=20, status_text="已下载 20%")
+        app.update_job("status-flow", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
+        app.update_job("status-flow", status="done", progress=100, status_text="下载完成", finished_at=app.iso_now())
+    finally:
+        app.send_wecom_job_notification = old_send
 
     stored = next(j for j in app.jobs if j["id"] == "status-flow")
     assert len(sent) == 2
-    assert "开始下载" in sent[0]
-    assert "下载完成" in sent[1]
+    assert sent[0][0] == "started"
+    assert "开始下载" in sent[0][1]
+    assert sent[1][0] == "done"
+    assert "下载完成" in sent[1][1]
     assert stored["wecom_started_notified"] is True
     assert stored["wecom_done_notified"] is True
     assert stored["wecom_failed_notified"] is False
@@ -149,19 +171,63 @@ def test_update_job_triggers_started_done_failed_once_each():
 def test_update_job_triggers_failed_notification_once():
     reset_jobs()
     sent = []
-    app.send_wecom_text = lambda to_user, content: sent.append(content) or {"msgid": str(len(sent))}
+    old_send = app.send_wecom_job_notification
+    try:
+        app.send_wecom_job_notification = lambda job, kind, to_user, content: sent.append((kind, content)) or {"msgid": str(len(sent))}
 
-    job = sample_job("status-fail", status="queued")
-    app.add_job(job)
+        job = sample_job("status-fail", status="queued")
+        app.add_job(job)
 
-    app.update_job("status-fail", status="failed", progress=100, status_text="下载失败", error="源站超时", finished_at=app.iso_now())
-    app.update_job("status-fail", status="failed", progress=100, status_text="下载失败", error="源站超时", finished_at=app.iso_now())
+        app.update_job("status-fail", status="failed", progress=100, status_text="下载失败", error="源站超时", finished_at=app.iso_now())
+        app.update_job("status-fail", status="failed", progress=100, status_text="下载失败", error="源站超时", finished_at=app.iso_now())
+    finally:
+        app.send_wecom_job_notification = old_send
 
     stored = next(j for j in app.jobs if j["id"] == "status-fail")
     assert len(sent) == 1
-    assert "下载失败" in sent[0]
-    assert "源站超时" in sent[0]
+    assert sent[0][0] == "failed"
+    assert "下载失败" in sent[0][1]
+    assert "源站超时" in sent[0][1]
     assert stored["wecom_failed_notified"] is True
+
+
+def test_send_wecom_job_notification_prefers_forward_when_configured():
+    old_load_config = app.load_config
+    old_send_wecom_forward_notification = app.send_wecom_forward_notification
+    old_send_wecom_text = app.send_wecom_text
+    try:
+        calls = []
+        app.load_config = lambda: {"wecom_forward_url": "http://forward.test/notify", "wecom_forward_token": "abc"}
+        app.send_wecom_forward_notification = lambda job, kind, to_user, content, cfg=None: calls.append(("forward", kind, to_user, content, cfg)) or {"msgid": "f1"}
+        app.send_wecom_text = lambda to_user, content: calls.append(("direct", to_user, content)) or {"msgid": "d1"}
+
+        result = app.send_wecom_job_notification(sample_job("forward-job", "done"), "done", "zhangsan", "done msg")
+
+        assert result["msgid"] == "f1"
+        assert len(calls) == 1
+        assert calls[0][0] == "forward"
+        assert calls[0][1] == "done"
+    finally:
+        app.load_config = old_load_config
+        app.send_wecom_forward_notification = old_send_wecom_forward_notification
+        app.send_wecom_text = old_send_wecom_text
+
+
+def test_send_wecom_job_notification_falls_back_to_direct_when_forward_not_configured():
+    old_load_config = app.load_config
+    old_send_wecom_text = app.send_wecom_text
+    try:
+        calls = []
+        app.load_config = lambda: {}
+        app.send_wecom_text = lambda to_user, content: calls.append((to_user, content)) or {"msgid": "d1"}
+
+        result = app.send_wecom_job_notification(sample_job("direct-job", "done"), "done", "zhangsan", "done msg")
+
+        assert result["msgid"] == "d1"
+        assert calls == [("zhangsan", "done msg")]
+    finally:
+        app.load_config = old_load_config
+        app.send_wecom_text = old_send_wecom_text
 
 
 def test_create_download_job_has_only_started_done_failed_flags_and_no_created_trigger():
@@ -247,6 +313,8 @@ if __name__ == "__main__":
         test_started_notify_failure_does_not_mark_notified,
         test_update_job_triggers_started_done_failed_once_each,
         test_update_job_triggers_failed_notification_once,
+        test_send_wecom_job_notification_prefers_forward_when_configured,
+        test_send_wecom_job_notification_falls_back_to_direct_when_forward_not_configured,
         test_create_download_job_has_only_started_done_failed_flags_and_no_created_trigger,
         test_wecom_client_error_details_for_invalid_touser,
     ]
