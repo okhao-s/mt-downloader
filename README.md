@@ -2,7 +2,7 @@
 
 新增“自定义企业微信转发”能力，给用户自己测试中转服务：
 
-- `wecom_forward_url`：主动通知转发地址，推荐直接配到应用设置里
+- `wecom_forward_url`：主动通知转发地址；既支持你自己的 JSON relay，也支持直接填 wxchat 代理根地址（如 `http://82.158.91.5:3000`）
 - `wecom_forward_token`：主动通知转发鉴权 token，推荐直接配到应用设置里
 - `WECOM_FORWARD_URL`：可选环境变量兜底
 - `WECOM_FORWARD_TOKEN`：可选环境变量兜底
@@ -33,6 +33,12 @@
 
 请求头：
 - 若配置了 token，会带 `X-Wecom-Forward-Token: <token>`
+
+兼容 wxchat 代理：
+- 如果 `wecom_forward_url` 填的是 wxchat 这类企业微信 API 代理根地址，程序会自动改走 `/cgi-bin/gettoken` + `/cgi-bin/message/send` 官方格式
+- 可填写：`http://82.158.91.5:3000` 或 `http://82.158.91.5:3000/cgi-bin/message/send`
+- 这种模式下不会发自定义 JSON，也不需要 `wecom_forward_token`
+- 前提：本地 `wecom_corp_id / wecom_agent_id / wecom_secret` 仍然要配置，因为 token 还是由 mt 通过代理去换
 
 一个适合自托管的视频下载面板。
 

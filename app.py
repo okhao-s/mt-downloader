@@ -6,7 +6,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import requests
@@ -169,13 +169,14 @@ def get_wecom_crypto(cfg: dict) -> WeComCrypto:
     )
 
 
-def get_wecom_client(cfg: dict) -> WeComClient:
+def get_wecom_client(cfg: dict, *, api_base_url: str | None = None) -> WeComClient:
     if not is_wecom_ready(cfg):
         raise ValueError("企业微信配置不完整或未启用")
     return WeComClient(
         corp_id=str(cfg.get("wecom_corp_id") or ""),
         agent_id=str(cfg.get("wecom_agent_id") or "0"),
         secret=str(cfg.get("wecom_secret") or ""),
+        api_base_url=api_base_url,
     )
 
 
@@ -191,6 +192,20 @@ def get_wecom_forward_token(cfg: dict | None = None) -> str:
 
 def is_wecom_forward_enabled(cfg: dict | None = None) -> bool:
     return bool(get_wecom_forward_url(cfg))
+
+
+def is_wecom_forward_proxy_url(forward_url: str | None) -> bool:
+    value = str(forward_url or "").strip()
+    if not value:
+        return False
+    try:
+        parts = urlsplit(value)
+    except Exception:
+        return False
+    if not parts.scheme or not parts.netloc:
+        return False
+    path = (parts.path or "").rstrip("/")
+    return path in {"", "/cgi-bin/message/send", "/cgi-bin/gettoken"}
 
 
 def build_wecom_forward_payload(job: dict, kind: str, to_user: str, content: str) -> dict:
@@ -215,6 +230,20 @@ def send_wecom_forward_notification(job: dict, kind: str, to_user: str, content:
     forward_url = get_wecom_forward_url(active_cfg)
     if not forward_url:
         raise RuntimeError("WECOM_FORWARD_URL 未配置")
+
+    if is_wecom_forward_proxy_url(forward_url):
+        client = get_wecom_client(active_cfg, api_base_url=forward_url)
+        result = client.send_text(to_user, content)
+        data = {
+            "ok": True,
+            "route": "wxchat-proxy",
+            "msgid": result.get("msgid"),
+            "errcode": result.get("errcode", 0),
+            "errmsg": result.get("errmsg", "ok"),
+        }
+        print(f"[wecom-forward] wxchat proxy ok: kind={kind} job_id={job.get('id')} to={to_user} msgid={data.get('msgid')}")
+        return data
+
     headers = {}
     forward_token = get_wecom_forward_token(active_cfg)
     if forward_token:

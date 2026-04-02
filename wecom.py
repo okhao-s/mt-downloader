@@ -6,6 +6,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from typing import Optional
+from urllib.parse import urlsplit
 
 import requests
 from Crypto.Cipher import AES
@@ -123,7 +124,16 @@ class WeComCrypto:
 
 
 class WeComClient:
-    def __init__(self, corp_id: str, agent_id: str | int, secret: str, timeout: int | float = 10, connect_timeout: int | float | None = 3.05, read_timeout: int | float | None = None):
+    def __init__(
+        self,
+        corp_id: str,
+        agent_id: str | int,
+        secret: str,
+        timeout: int | float = 10,
+        connect_timeout: int | float | None = 3.05,
+        read_timeout: int | float | None = None,
+        api_base_url: str | None = None,
+    ):
         self.corp_id = str(corp_id or "")
         self.agent_id = int(agent_id)
         self.secret = str(secret or "")
@@ -135,15 +145,43 @@ class WeComClient:
             if self.connect_timeout is not None and self.read_timeout is not None
             else self.timeout
         )
+        self.api_base_url = self._normalize_api_base_url(api_base_url)
+        self.token_url = self._build_api_url("/cgi-bin/gettoken")
+        self.send_message_url = self._build_api_url("/cgi-bin/message/send")
         self._token = None
         self._token_expire_at = 0.0
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _normalize_api_base_url(value: str | None) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        parts = urlsplit(raw)
+        if not parts.scheme or not parts.netloc:
+            raise ValueError("企业微信 API base URL 不合法")
+        path = (parts.path or "").rstrip("/")
+        if path.endswith("/cgi-bin/message/send"):
+            path = path[: -len("/cgi-bin/message/send")]
+        elif path.endswith("/cgi-bin/gettoken"):
+            path = path[: -len("/cgi-bin/gettoken")]
+        return f"{parts.scheme}://{parts.netloc}{path}"
+
+    def _build_api_url(self, path: str) -> str:
+        normalized_path = "/" + str(path or "").lstrip("/")
+        if self.api_base_url:
+            return f"{self.api_base_url}{normalized_path}"
+        if normalized_path == "/cgi-bin/gettoken":
+            return WECOM_TOKEN_URL
+        if normalized_path == "/cgi-bin/message/send":
+            return WECOM_SEND_MESSAGE_URL
+        raise ValueError(f"unsupported wecom api path: {normalized_path}")
 
     def _fetch_access_token(self) -> str:
         masked_corp = _mask_wecom_value(self.corp_id)
         try:
             resp = requests.get(
-                WECOM_TOKEN_URL,
+                self.token_url,
                 params={"corpid": self.corp_id, "corpsecret": self.secret},
                 timeout=self.request_timeout,
             )
@@ -189,7 +227,7 @@ class WeComClient:
         def do_send(access_token: str) -> dict:
             try:
                 resp = requests.post(
-                    WECOM_SEND_MESSAGE_URL,
+                    self.send_message_url,
                     params={"access_token": access_token},
                     json=payload,
                     timeout=self.request_timeout,

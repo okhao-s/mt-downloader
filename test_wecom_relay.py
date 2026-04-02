@@ -59,6 +59,54 @@ def test_send_wecom_forward_notification_uses_custom_forward_url():
     assert captured["timeout"] == 20
 
 
+def test_send_wecom_forward_notification_supports_wxchat_proxy_base_url():
+    calls = []
+
+    class DummyClient:
+        def __init__(self, corp_id, agent_id, secret, api_base_url=None, **kwargs):
+            calls.append(
+                {
+                    "corp_id": corp_id,
+                    "agent_id": agent_id,
+                    "secret": secret,
+                    "api_base_url": api_base_url,
+                    "kwargs": kwargs,
+                }
+            )
+
+        def send_text(self, to_user, content):
+            calls.append({"to_user": to_user, "content": content})
+            return {"errcode": 0, "errmsg": "ok", "msgid": "proxy-msg-1"}
+
+    old_client = app.WeComClient
+    app.WeComClient = DummyClient
+    try:
+        cfg = {
+            "wecom_forward_url": "http://82.158.91.5:3000",
+            "wecom_corp_id": "ww123",
+            "wecom_agent_id": "1000002",
+            "wecom_secret": "secret-123",
+        }
+        job = {
+            "id": "job-forward-2",
+            "status": "done",
+        }
+
+        result = app.send_wecom_forward_notification(job, "done", "zhangsan", "hello wxchat", cfg=cfg)
+    finally:
+        app.WeComClient = old_client
+
+    assert result["ok"] is True
+    assert result["msgid"] == "proxy-msg-1"
+    assert calls[0]["api_base_url"] == "http://82.158.91.5:3000"
+    assert calls[0]["corp_id"] == "ww123"
+    assert calls[0]["agent_id"] == "1000002"
+    assert calls[0]["secret"] == "secret-123"
+    assert calls[1] == {"to_user": "zhangsan", "content": "hello wxchat"}
+
+
 if __name__ == "__main__":
     test_send_wecom_forward_notification_uses_custom_forward_url()
     print("PASS: test_send_wecom_forward_notification_uses_custom_forward_url")
+    test_send_wecom_forward_notification_supports_wxchat_proxy_base_url()
+    print("PASS: test_send_wecom_forward_notification_supports_wxchat_proxy_base_url")
