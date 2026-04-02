@@ -39,12 +39,15 @@ def sample_job(job_id="job1", status="queued"):
         "wecom_created_notified": False,
         "wecom_created_notified_at": None,
         "wecom_created_notifying": False,
+        "wecom_created_retry_scheduled": False,
         "wecom_started_notified": False,
         "wecom_started_notified_at": None,
         "wecom_started_notifying": False,
+        "wecom_started_retry_scheduled": False,
         "wecom_completion_notified": False,
         "wecom_completion_notified_at": None,
         "wecom_completion_notifying": False,
+        "wecom_completion_retry_scheduled": False,
     }
 
 
@@ -327,6 +330,75 @@ def test_wecom_client_error_details_for_invalid_touser():
         wecom.requests.post = old_post
 
 
+def test_schedule_wecom_notification_retry_deduplicates_same_job_and_kind():
+    reset_jobs()
+    job = sample_job("retry-dedupe", status="done")
+    app.add_job(job)
+
+    calls = []
+    old_thread = app.threading.Thread
+
+    class FakeThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            calls.append(self.name)
+
+    try:
+        app.threading.Thread = FakeThread
+        app.schedule_wecom_notification_retry("retry-dedupe", "completion", delays=(0.01,))
+        app.schedule_wecom_notification_retry("retry-dedupe", "completion", delays=(0.01,))
+        stored = next(j for j in app.jobs if j["id"] == "retry-dedupe")
+        assert calls == ["wecom-retry-completion-retry-"]
+        assert stored["wecom_completion_retry_scheduled"] is True
+    finally:
+        app.threading.Thread = old_thread
+
+
+
+def test_create_download_job_does_not_premark_created_notified():
+    reset_jobs()
+
+    old_discover_stream = app.discover_stream
+    old_choose_stream_url = app.choose_stream_url
+    old_route_proxy_for_url = app.route_proxy_for_url
+    old_resolve_request_proxy = app.resolve_request_proxy
+    old_resolve_site_cookies_path = app.resolve_site_cookies_path
+    old_load_config = app.load_config
+    old_download_executor = app.download_executor
+
+    class DummyExecutor:
+        def submit(self, *args, **kwargs):
+            return None
+
+    try:
+        app.discover_stream = lambda *args, **kwargs: {"title": "标题", "streams": [{"url": "https://example.com/video.mp4"}], "extractor": "test"}
+        app.choose_stream_url = lambda info, stream_url, stream_index: "https://example.com/video.mp4"
+        app.route_proxy_for_url = lambda *args, **kwargs: ""
+        app.resolve_request_proxy = lambda *args, **kwargs: ""
+        app.resolve_site_cookies_path = lambda *args, **kwargs: None
+        app.load_config = lambda: {}
+        app.download_executor = DummyExecutor()
+
+        payload = app.DownloadPayload(url="https://example.com/post/1", wecom_to_user="zhangsan")
+        job = app.create_download_job(payload)
+
+        assert job["wecom_created_notified"] is False
+        assert job["wecom_created_notified_at"] is None
+        assert job["wecom_created_retry_scheduled"] is False
+    finally:
+        app.discover_stream = old_discover_stream
+        app.choose_stream_url = old_choose_stream_url
+        app.route_proxy_for_url = old_route_proxy_for_url
+        app.resolve_request_proxy = old_resolve_request_proxy
+        app.resolve_site_cookies_path = old_resolve_site_cookies_path
+        app.load_config = old_load_config
+        app.download_executor = old_download_executor
+
+
 if __name__ == "__main__":
     tests = [
         test_created_notify_marks_only_after_success,
@@ -339,6 +411,8 @@ if __name__ == "__main__":
         test_failed_and_cancelled_do_not_send_completion_notifications,
         test_completion_retry_recovers_slow_done_after_transient_send_failure,
         test_fast_done_retry_keeps_three_notifications_only_once_each,
+        test_schedule_wecom_notification_retry_deduplicates_same_job_and_kind,
+        test_create_download_job_does_not_premark_created_notified,
         test_wecom_client_error_details_for_invalid_touser,
     ]
     for test in tests:

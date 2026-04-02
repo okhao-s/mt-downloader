@@ -64,6 +64,7 @@ download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thr
 WECOM_FINAL_STATUSES = {"done"}
 CONFIG_KEEP_SENTINEL = "__KEEP__"
 WECOM_NOTIFY_RETRY_DELAYS = (0.5, 1.0, 2.0)
+WECOM_NOTIFY_POLL_INTERVAL = 0.2
 
 
 def mask_secret(value: str | None, keep: int = 3) -> str:
@@ -303,6 +304,28 @@ def get_job_snapshot(job_id: str | None) -> dict | None:
     return None
 
 
+def mark_wecom_retry_scheduled(job_id: str | None, kind: str, scheduled: bool) -> bool:
+    if not job_id:
+        return False
+    retry_key = f"wecom_{kind}_retry_scheduled"
+    with jobs_lock:
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if is_job_hidden(job):
+                return False
+            current = bool(job.get(retry_key))
+            if scheduled:
+                if current:
+                    return False
+                job[retry_key] = True
+            else:
+                job[retry_key] = False
+            job.setdefault("updated_at", iso_now())
+            return True
+    return False
+
+
 def ensure_wecom_notified(job_id: str | None, kind: str, wait_timeout: float = 5.0) -> bool:
     if not job_id:
         return False
@@ -327,9 +350,10 @@ def ensure_wecom_notified(job_id: str | None, kind: str, wait_timeout: float = 5
             attempted_trigger = True
             trigger(snapshot)
             continue
-        if time.time() >= deadline:
+        remaining = deadline - time.time()
+        if remaining <= 0:
             return False
-        time.sleep(0.05)
+        time.sleep(min(WECOM_NOTIFY_POLL_INTERVAL, remaining))
 
 
 def ensure_wecom_created_notified(job_id: str | None, wait_timeout: float = 5.0) -> bool:
@@ -344,34 +368,39 @@ def schedule_wecom_notification_retry(job_id: str | None, kind: str, delays: tup
     job_id = str(job_id or "").strip()
     if not job_id or kind not in {"created", "started", "completion"}:
         return
+    if not mark_wecom_retry_scheduled(job_id, kind, True):
+        return
     retry_delays = tuple(delays or WECOM_NOTIFY_RETRY_DELAYS)
 
     def worker():
-        for delay in retry_delays:
-            time.sleep(max(0.0, delay))
-            snapshot = get_job_snapshot(job_id)
-            if not snapshot or is_job_hidden(snapshot):
-                return
-            if not snapshot.get("wecom_to_user"):
-                return
-            if snapshot.get(f"wecom_{kind}_notified"):
-                return
-            status = str(snapshot.get("status") or "").strip().lower()
-            if kind == "created" and status != "queued":
-                return
-            if kind == "started" and status not in {"downloading", "done"}:
-                return
-            if kind == "completion" and status not in WECOM_FINAL_STATUSES:
-                return
-            if kind == "created":
-                notify_wecom_job_created(snapshot)
-            elif kind == "started":
-                notify_wecom_job_started(snapshot)
-            else:
-                notify_wecom_job_completion(snapshot)
-            latest = get_job_snapshot(job_id)
-            if not latest or latest.get(f"wecom_{kind}_notified"):
-                return
+        try:
+            for delay in retry_delays:
+                time.sleep(max(0.0, delay))
+                snapshot = get_job_snapshot(job_id)
+                if not snapshot or is_job_hidden(snapshot):
+                    return
+                if not snapshot.get("wecom_to_user"):
+                    return
+                if snapshot.get(f"wecom_{kind}_notified"):
+                    return
+                status = str(snapshot.get("status") or "").strip().lower()
+                if kind == "created" and status != "queued":
+                    return
+                if kind == "started" and status not in {"downloading", "done"}:
+                    return
+                if kind == "completion" and status not in WECOM_FINAL_STATUSES:
+                    return
+                if kind == "created":
+                    notify_wecom_job_created(snapshot)
+                elif kind == "started":
+                    notify_wecom_job_started(snapshot)
+                else:
+                    notify_wecom_job_completion(snapshot)
+                latest = get_job_snapshot(job_id)
+                if not latest or latest.get(f"wecom_{kind}_notified"):
+                    return
+        finally:
+            mark_wecom_retry_scheduled(job_id, kind, False)
 
     threading.Thread(target=worker, name=f"wecom-retry-{kind}-{job_id[:6]}", daemon=True).start()
 
@@ -433,6 +462,9 @@ def notify_wecom_job_completion(job: dict):
     if started_required:
         started_ready = ensure_wecom_started_notified(job_id)
     if not started_ready:
+        latest = get_job_snapshot(job_id)
+        if latest and not latest.get("wecom_started_retry_scheduled"):
+            schedule_wecom_notification_retry(job_id, "started")
         schedule_wecom_notification_retry(job_id, "completion")
         return
     claimed_job = claim_wecom_notification(job_id, "completion")
@@ -1045,15 +1077,18 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "extractor": extractor,
         "request_payload": payload.model_dump(),
         "wecom_to_user": str(payload.wecom_to_user or "").strip(),
-        "wecom_created_notified": bool(payload.wecom_to_user),
-        "wecom_created_notified_at": now if payload.wecom_to_user else None,
+        "wecom_created_notified": False,
+        "wecom_created_notified_at": None,
         "wecom_created_notifying": False,
+        "wecom_created_retry_scheduled": False,
         "wecom_started_notified": False,
         "wecom_started_notified_at": None,
         "wecom_started_notifying": False,
+        "wecom_started_retry_scheduled": False,
         "wecom_completion_notified": False,
         "wecom_completion_notified_at": None,
         "wecom_completion_notifying": False,
+        "wecom_completion_retry_scheduled": False,
     }
     add_job(job)
 
