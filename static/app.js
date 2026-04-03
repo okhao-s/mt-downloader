@@ -623,6 +623,7 @@ async function saveConfig() {
     const wecomSecretInput = $('cfg_wecom_secret')?.value.trim();
     const wecomTokenInput = $('cfg_wecom_token')?.value.trim();
     const wecomAesInput = $('cfg_wecom_encoding_aes_key')?.value.trim();
+    const wecomForwardTokenInput = $('cfg_wecom_forward_token')?.value.trim();
     const data = await api('/api/config', {
       default_proxy: $('cfg_proxy').value.trim(),
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
