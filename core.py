@@ -202,19 +202,6 @@ def extract_title_from_html(html: str) -> Optional[str]:
     meta_candidates = []
     other_candidates = []
 
-    meta_patterns = [
-        r"<meta[^>]+property\s*=\s*['\"]og:title['\"][^>]+content\s*=\s*['\"](.*?)['\"]",
-        r"<meta[^>]+content\s*=\s*['\"](.*?)['\"][^>]+property\s*=\s*['\"]og:title['\"]",
-        r"<meta[^>]+name\s*=\s*['\"]twitter:title['\"][^>]+content\s*=\s*['\"](.*?)['\"]",
-        r"<meta[^>]+content\s*=\s*['\"](.*?)['\"][^>]+name\s*=\s*['\"]twitter:title['\"]",
-        r"<meta[^>]+name\s*=\s*['\"]title['\"][^>]+content\s*=\s*['\"](.*?)['\"]",
-        r"<meta[^>]+content\s*=\s*['\"](.*?)['\"][^>]+name\s*=\s*['\"]title['\"]",
-    ]
-    other_patterns = [
-        r'<h1[^>]*>(.*?)</h1>',
-        r'<title>(.*?)</title>',
-    ]
-
     generic_markers = [
         "想爱爱就上有爱爱",
         "uaa.com｜有爱爱",
@@ -232,6 +219,24 @@ def extract_title_from_html(html: str) -> Optional[str]:
         r"\s*[-—–]\s*Bilibili\s*$",
     ]
 
+    def collect_meta_title_candidates(source_html: str) -> list[str]:
+        candidates = []
+        for tag in re.findall(r"<meta\b[^>]*>", source_html, re.IGNORECASE):
+            attrs = {
+                key.lower(): value
+                for key, _, value in re.findall(
+                    r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*([\"'])(.*?)\2",
+                    tag,
+                    re.IGNORECASE | re.DOTALL,
+                )
+            }
+            meta_key = (attrs.get("property") or attrs.get("name") or "").strip().lower()
+            if meta_key in {"og:title", "twitter:title", "title"}:
+                content = (attrs.get("content") or "").strip()
+                if content:
+                    candidates.append(content)
+        return candidates
+
     def clean_title(raw: str) -> str:
         title = unescape(re.sub(r"<[^>]+>", " ", raw or ""))
         title = title.replace("\u200b", " ").replace("\xa0", " ")
@@ -241,17 +246,20 @@ def extract_title_from_html(html: str) -> Optional[str]:
             title = re.sub(suffix_pat, "", title, flags=re.IGNORECASE).strip(" \t\r\n-_|｜")
         return title
 
-    for pat in meta_patterns:
-        for match in re.findall(pat, html, re.IGNORECASE | re.DOTALL):
-            title = clean_title(match)
-            if title:
-                meta_candidates.append(title)
+    for match in collect_meta_title_candidates(html):
+        title = clean_title(match)
+        if title:
+            meta_candidates.append(title)
 
-    for pat in other_patterns:
-        for match in re.findall(pat, html, re.IGNORECASE | re.DOTALL):
-            title = clean_title(match)
-            if title:
-                other_candidates.append(title)
+    for match in re.findall(r'<h1[^>]*>(.*?)</h1>', html, re.IGNORECASE | re.DOTALL):
+        title = clean_title(match)
+        if title:
+            other_candidates.append(title)
+
+    for match in re.findall(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL):
+        title = clean_title(match)
+        if title:
+            other_candidates.append(title)
 
     candidates = meta_candidates + other_candidates
     if not candidates:
