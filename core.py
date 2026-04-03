@@ -16,6 +16,8 @@ DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Ge
 X_GQL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
 X_TWEET_RESULT_BY_REST_ID_QUERY = "sBoAB5nqJTOyR9sZ5qVLsw"
 DEFAULT_PROXY_BYPASS_PLATFORMS = {"douyin", "bilibili"}
+YTDLP_INFO_TIMEOUT = int(os.getenv("YTDLP_INFO_TIMEOUT", "45"))
+YTDLP_SOCKET_TIMEOUT = int(os.getenv("YTDLP_SOCKET_TIMEOUT", "30"))
 
 
 def ensure_parent(path: Path):
@@ -610,7 +612,15 @@ def fetch_x_graphql_tweet_result(rest_id: str, cookies_path: Optional[str] = Non
 
 
 def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> dict:
-    cmd = ["yt-dlp", "--ignore-config", "-J", "--no-warnings", "--skip-download"]
+    cmd = [
+        "yt-dlp",
+        "--ignore-config",
+        "-J",
+        "--no-warnings",
+        "--skip-download",
+        "--socket-timeout",
+        str(YTDLP_SOCKET_TIMEOUT),
+    ]
     if referer:
         cmd += ["--add-header", f"Referer:{referer}"]
     if user_agent:
@@ -620,7 +630,10 @@ def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent:
     if cookies_path and Path(cookies_path).exists():
         cmd += ["--cookies", cookies_path]
     cmd.append(url)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_INFO_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"yt-dlp 探测超时（>{YTDLP_INFO_TIMEOUT}s）") from exc
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "yt-dlp failed")
     return json.loads(proc.stdout)
@@ -675,6 +688,8 @@ def download_with_ytdlp(
             "--progress",
             "--no-part",
             "--restrict-filenames",
+            "--socket-timeout",
+            str(YTDLP_SOCKET_TIMEOUT),
             "-o",
             str(ytdlp_output),
         ]
@@ -1124,9 +1139,8 @@ def ffmpeg_download(
         str(output_path),
     ]
 
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     progress_lines = []
-    stderr_lines = []
     stats = {
         "out_time_ms": 0,
         "total_size": 0,
@@ -1167,19 +1181,11 @@ def ffmpeg_download(
                 elif line == "progress=end":
                     if progress_callback:
                         progress_callback(99, "正在收尾封装…")
-        if process.stderr is not None:
-            for raw_line in process.stderr:
-                if should_cancel and should_cancel():
-                    process.terminate()
-                    raise RuntimeError("下载已取消")
-                line = raw_line.rstrip()
-                if line.strip():
-                    stderr_lines.append(line)
     finally:
         returncode = process.wait()
 
     if returncode != 0:
-        detail = "\n".join((stderr_lines or progress_lines)[-80:]).strip()
+        detail = "\n".join(progress_lines[-80:]).strip()
         if not detail:
             detail = f"ffmpeg exited with code {returncode}"
         raise RuntimeError(detail[-4000:])
