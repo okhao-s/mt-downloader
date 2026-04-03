@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import threading
@@ -61,6 +62,10 @@ jobs: list[dict] = []
 jobs_lock = threading.Lock()
 MAX_CONCURRENT_DOWNLOADS = 3
 download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="mt-download")
+PARSE_EXECUTOR_WORKERS = max(2, int(os.getenv("PARSE_EXECUTOR_WORKERS", "4")))
+MEDIA_EXECUTOR_WORKERS = max(4, int(os.getenv("MEDIA_EXECUTOR_WORKERS", "12")))
+parse_executor = ThreadPoolExecutor(max_workers=PARSE_EXECUTOR_WORKERS, thread_name_prefix="mt-parse")
+media_executor = ThreadPoolExecutor(max_workers=MEDIA_EXECUTOR_WORKERS, thread_name_prefix="mt-media")
 WECOM_FINAL_STATUSES = {"done", "failed"}
 CONFIG_KEEP_SENTINEL = "__KEEP__"
 WECOM_TITLE_MAX_LEN = 80
@@ -675,6 +680,13 @@ def build_suggested_output_name(display_title: str | None, fallback_prefix: str 
     return normalize_filename(base_name)
 
 
+async def run_in_executor(executor: ThreadPoolExecutor, func, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    if kwargs:
+        return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
+    return await loop.run_in_executor(executor, func, *args)
+
+
 def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int = 60):
     headers = build_headers(referer, user_agent)
     proxies = build_proxies(proxy)
@@ -816,7 +828,7 @@ class ConfigPayload(BaseModel):
 
 
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request):
+async def home(request: Request):
     cfg = load_config()
     recent = list_recent_jobs(20)
     return templates.TemplateResponse(request, "index.html", {"config": cfg, "jobs": recent})
@@ -866,14 +878,16 @@ def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
 
 
 @app.post("/api/parse")
-def parse_url(payload: ParsePayload):
+async def parse_url(payload: ParsePayload):
     cfg = load_config()
     input_url = normalize_input_url(payload.url)
     proxy = resolve_request_proxy(input_url, payload.proxy, cfg)
     if not input_url:
         raise HTTPException(status_code=400, detail="请提供有效链接")
     cookies_path = resolve_site_cookies_path(input_url, cfg)
-    info = discover_stream(
+    info = await run_in_executor(
+        parse_executor,
+        discover_stream,
         input_url,
         payload.referer,
         payload.user_agent,
@@ -1186,19 +1200,21 @@ def retry_job(job_id: str):
 
 
 @app.post("/api/download")
-def download(request: Request, payload: DownloadPayload):
-    return create_download_job(payload)
+async def download(request: Request, payload: DownloadPayload):
+    return await run_in_executor(parse_executor, create_download_job, payload)
 
 
 @app.post("/api/download/all")
-def download_all(request: Request, payload: BatchDownloadPayload):
+async def download_all(request: Request, payload: BatchDownloadPayload):
     cfg = load_config()
     input_url = normalize_input_url(payload.url)
     proxy = resolve_request_proxy(input_url, payload.proxy, cfg)
     if not input_url:
         raise HTTPException(status_code=400, detail="请提供有效链接")
     cookies_path = resolve_site_cookies_path(input_url, cfg)
-    info = discover_stream(
+    info = await run_in_executor(
+        parse_executor,
+        discover_stream,
         input_url,
         payload.referer,
         payload.user_agent,
@@ -1226,7 +1242,7 @@ def download_all(request: Request, payload: BatchDownloadPayload):
             stream_url=best_stream,
             stream_index=best_index,
         )
-        job = create_download_job(job_payload)
+        job = await run_in_executor(parse_executor, create_download_job, job_payload)
         return {"ok": True, "title": info.get("title") or job_payload.output, "stream_count": 1, "jobs": [job]}
 
     jobs_created = []
@@ -1242,12 +1258,12 @@ def download_all(request: Request, payload: BatchDownloadPayload):
             stream_url=stream,
             stream_index=index,
         )
-        jobs_created.append(create_download_job(job_payload))
+        jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
     return {"ok": True, "title": info.get("title") or base_title, "stream_count": len(streams), "jobs": jobs_created}
 
 
 @app.get("/api/jobs")
-def list_jobs():
+async def list_jobs():
     return list_recent_jobs(50)
 
 
@@ -1295,7 +1311,7 @@ def clear_history():
 
 
 @app.get("/api/preview.m3u8")
-def preview_m3u8(
+async def preview_m3u8(
     request: Request,
     url: str,
     referer: str | None = None,
@@ -1310,12 +1326,30 @@ def preview_m3u8(
         selected_stream = stream_url
     else:
         cookies_path = resolve_site_cookies_path(url, cfg)
-        info = discover_stream(url, referer, user_agent, actual_proxy, stream_url, stream_index, cookies_path)
+        info = await run_in_executor(
+            parse_executor,
+            discover_stream,
+            url,
+            referer,
+            user_agent,
+            actual_proxy,
+            stream_url,
+            stream_index,
+            cookies_path,
+        )
         selected_stream = choose_stream_url(info, stream_url, stream_index)
     if not selected_stream:
         raise HTTPException(status_code=404, detail="未解析到 m3u8 流")
 
-    resp = safe_requests_get(selected_stream, referer=referer, user_agent=user_agent, proxy=actual_proxy, timeout=30)
+    resp = await run_in_executor(
+        media_executor,
+        safe_requests_get,
+        selected_stream,
+        referer,
+        user_agent,
+        actual_proxy,
+        30,
+    )
     resp.raise_for_status()
     proxy_prefix = f"{str(request.base_url)}api/media/"
     content = rewrite_m3u8_manifest(resp.text, selected_stream, proxy_prefix, referer, user_agent, actual_proxy)
@@ -1324,11 +1358,19 @@ def preview_m3u8(
 
 @app.get("/api/media")
 @app.get("/api/media/{name:path}")
-def media_proxy(name: str = "", target: str = "", referer: str | None = None, user_agent: str | None = None, proxy: str | None = None):
+async def media_proxy(name: str = "", target: str = "", referer: str | None = None, user_agent: str | None = None, proxy: str | None = None):
     cfg = load_config()
     actual_proxy = resolve_request_proxy(target, proxy, cfg)
     try:
-        r = safe_requests_get(target, referer=referer, user_agent=user_agent, proxy=actual_proxy, timeout=60)
+        r = await run_in_executor(
+            media_executor,
+            safe_requests_get,
+            target,
+            referer,
+            user_agent,
+            actual_proxy,
+            60,
+        )
         r.raise_for_status()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"媒体分片拉取失败：{exc}")
@@ -1336,12 +1378,12 @@ def media_proxy(name: str = "", target: str = "", referer: str | None = None, us
 
 
 @app.get("/api/config")
-def get_config():
+async def get_config():
     return enrich_config_view(load_config())
 
 
 @app.get("/api/version")
-def get_version():
+async def get_version():
     return {"version": APP_VERSION, "commit": APP_COMMIT}
 
 
