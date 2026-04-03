@@ -130,8 +130,8 @@ docker run -d \
   --name mt-downloader \
   -p 9151:8080 \
   -e TZ=Asia/Shanghai \
-  -e WECOM_FORWARD_URL= \
-  -e WECOM_FORWARD_TOKEN= \
+  #-e WECOM_FORWARD_URL= \
+  #-e WECOM_FORWARD_TOKEN= \
   -v /root/docker/video:/downloads \
   -v $(pwd)/data:/app/data \
   --restart unless-stopped \
