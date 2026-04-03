@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import requests
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -687,15 +687,15 @@ async def run_in_executor(executor: ThreadPoolExecutor, func, *args, **kwargs):
     return await loop.run_in_executor(executor, func, *args)
 
 
-def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int = 60):
+def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int = 60, stream: bool = False):
     headers = build_headers(referer, user_agent)
     proxies = build_proxies(proxy)
     try:
-        return requests.get(target, headers=headers, proxies=proxies, timeout=timeout)
+        return requests.get(target, headers=headers, proxies=proxies, timeout=timeout, stream=stream)
     except requests.exceptions.SSLError:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", InsecureRequestWarning)
-            return requests.get(target, headers=headers, proxies=proxies, timeout=timeout, verify=False)
+            return requests.get(target, headers=headers, proxies=proxies, timeout=timeout, verify=False, stream=stream)
 
 
 def extract_first_url(text: str | None) -> str:
@@ -1361,8 +1361,9 @@ async def preview_m3u8(
 async def media_proxy(name: str = "", target: str = "", referer: str | None = None, user_agent: str | None = None, proxy: str | None = None):
     cfg = load_config()
     actual_proxy = resolve_request_proxy(target, proxy, cfg)
+    response = None
     try:
-        r = await run_in_executor(
+        response = await run_in_executor(
             media_executor,
             safe_requests_get,
             target,
@@ -1370,11 +1371,37 @@ async def media_proxy(name: str = "", target: str = "", referer: str | None = No
             user_agent,
             actual_proxy,
             60,
+            True,
         )
-        r.raise_for_status()
+        response.raise_for_status()
     except Exception as exc:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
         raise HTTPException(status_code=502, detail=f"媒体分片拉取失败：{exc}")
-    return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"))
+
+    headers = {}
+    for key in ("content-length", "content-range", "accept-ranges", "cache-control", "etag", "last-modified"):
+        value = response.headers.get(key)
+        if value:
+            headers[key] = value
+
+    def iter_media():
+        try:
+            for chunk in response.iter_content(chunk_size=1024 * 256):
+                if chunk:
+                    yield chunk
+        finally:
+            response.close()
+
+    return StreamingResponse(
+        iter_media(),
+        media_type=response.headers.get("content-type", "application/octet-stream"),
+        headers=headers,
+        status_code=response.status_code,
+    )
 
 
 @app.get("/api/config")

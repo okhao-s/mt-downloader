@@ -1,7 +1,9 @@
+import copy
 import json
 import os
 import re
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
@@ -18,6 +20,9 @@ X_TWEET_RESULT_BY_REST_ID_QUERY = "sBoAB5nqJTOyR9sZ5qVLsw"
 DEFAULT_PROXY_BYPASS_PLATFORMS = {"douyin", "bilibili"}
 YTDLP_INFO_TIMEOUT = int(os.getenv("YTDLP_INFO_TIMEOUT", "45"))
 YTDLP_SOCKET_TIMEOUT = int(os.getenv("YTDLP_SOCKET_TIMEOUT", "30"))
+DISCOVER_STREAM_CACHE_TTL = max(1, int(os.getenv("DISCOVER_STREAM_CACHE_TTL", "15")))
+_DISCOVER_STREAM_CACHE: dict[tuple, tuple[float, dict]] = {}
+_DISCOVER_STREAM_CACHE_LOCK = threading.Lock()
 
 
 def ensure_parent(path: Path):
@@ -209,6 +214,15 @@ def extract_title_from_html(html: str) -> Optional[str]:
         "有爱爱为您提供优质的成人内容",
     ]
 
+    failure_title_markers = [
+        "javascript is not available",
+        "please enable javascript",
+        "something went wrong, but don’t fret",
+        "something went wrong, but don't fret",
+        "x.com",
+        "twitter",
+    ]
+
     suffix_patterns = [
         r"\s*[|｜]\s*51吃瓜网.*$",
         r"\s*[|｜]\s*UAA视频\s*$",
@@ -246,6 +260,12 @@ def extract_title_from_html(html: str) -> Optional[str]:
             title = re.sub(suffix_pat, "", title, flags=re.IGNORECASE).strip(" \t\r\n-_|｜")
         return title
 
+    def is_noise_title(title: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(title or "")).strip().lower()
+        if not normalized:
+            return True
+        return any(marker in normalized for marker in failure_title_markers)
+
     for match in collect_meta_title_candidates(html):
         title = clean_title(match)
         if title:
@@ -267,19 +287,20 @@ def extract_title_from_html(html: str) -> Optional[str]:
 
     non_generic = [
         title for title in candidates
-        if not any(marker in title for marker in generic_markers)
+        if not any(marker in title for marker in generic_markers) and not is_noise_title(title)
     ]
     if meta_candidates:
         preferred = [
             title for title in dedupe_keep_order(meta_candidates)
-            if not any(marker in title for marker in generic_markers)
+            if not any(marker in title for marker in generic_markers) and not is_noise_title(title)
         ]
         if preferred:
             preferred.sort(key=lambda x: (len(x) >= 4, len(x)), reverse=True)
             return preferred[0]
-    pool = dedupe_keep_order(non_generic or candidates)
+    pool = dedupe_keep_order(non_generic or [title for title in candidates if not is_noise_title(title)] or candidates)
     pool.sort(key=lambda x: (len(x) >= 4, len(x)), reverse=True)
-    return pool[0]
+    chosen = pool[0]
+    return None if is_noise_title(chosen) else chosen
 
 
 def extract_m3u8_from_html(html: str):
@@ -997,7 +1018,34 @@ def try_x_fallback_streams(url: str, info: dict, referer: Optional[str] = None, 
     return extra_streams, extra_options, extractor
 
 
-def discover_stream(
+def _build_discover_stream_cache_key(
+    url: str,
+    referer: Optional[str],
+    user_agent: Optional[str],
+    proxy: Optional[str],
+    selected_url: Optional[str],
+    selected_index: Optional[int],
+    cookies_path: Optional[str],
+) -> tuple:
+    cookie_mtime = None
+    if cookies_path:
+        try:
+            cookie_mtime = Path(cookies_path).stat().st_mtime
+        except Exception:
+            cookie_mtime = None
+    return (
+        url,
+        referer or "",
+        user_agent or "",
+        proxy or "",
+        selected_url or "",
+        selected_index,
+        cookies_path or "",
+        cookie_mtime,
+    )
+
+
+def _discover_stream_uncached(
     url: str,
     referer: Optional[str] = None,
     user_agent: Optional[str] = None,
@@ -1104,6 +1152,47 @@ def discover_stream(
     if not info.get("stream_options") and info.get("streams"):
         info["stream_options"] = [build_stream_option(s, source="fallback") for s in info["streams"]]
 
+    return info
+
+
+def discover_stream(
+    url: str,
+    referer: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    proxy: Optional[str] = None,
+    selected_url: Optional[str] = None,
+    selected_index: Optional[int] = None,
+    cookies_path: Optional[str] = None,
+) -> dict:
+    cache_key = _build_discover_stream_cache_key(
+        url,
+        referer,
+        user_agent,
+        proxy,
+        selected_url,
+        selected_index,
+        cookies_path,
+    )
+    now = time.time()
+    with _DISCOVER_STREAM_CACHE_LOCK:
+        cached = _DISCOVER_STREAM_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            return copy.deepcopy(cached[1])
+        expired_keys = [key for key, value in _DISCOVER_STREAM_CACHE.items() if value[0] <= now]
+        for key in expired_keys:
+            _DISCOVER_STREAM_CACHE.pop(key, None)
+
+    info = _discover_stream_uncached(
+        url,
+        referer,
+        user_agent,
+        proxy,
+        selected_url,
+        selected_index,
+        cookies_path,
+    )
+    with _DISCOVER_STREAM_CACHE_LOCK:
+        _DISCOVER_STREAM_CACHE[cache_key] = (now + DISCOVER_STREAM_CACHE_TTL, copy.deepcopy(info))
     return info
 
 
