@@ -1,16 +1,11 @@
 services:
-  m3u8-downloader:
-    container_name: Mt
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        APP_VERSION: ${APP_VERSION:-dev}
-        APP_COMMIT: ${APP_COMMIT:-unknown}
-    image: okhao/mt:local
+  mt-downloader:
+    image: okhao/mt:latest
+    container_name: mt-downloader
     ports:
       - "9151:8080"
     environment:
+      - TZ=${TZ:-Asia/Shanghai}
       - WECOM_FORWARD_URL=${WECOM_FORWARD_URL:-}
       - WECOM_FORWARD_TOKEN=${WECOM_FORWARD_TOKEN:-}
     volumes:

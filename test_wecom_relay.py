@@ -83,9 +83,12 @@ def test_send_wecom_forward_notification_supports_wxchat_proxy_base_url():
     try:
         cfg = {
             "wecom_forward_url": "http://82.158.91.5:3000",
+            "wecom_enabled": True,
             "wecom_corp_id": "ww123",
             "wecom_agent_id": "1000002",
             "wecom_secret": "secret-123",
+            "wecom_token": "token-123",
+            "wecom_encoding_aes_key": "abcdefghijklmnopqrstuvwxyzABCDEFG0123456789A",
         }
         job = {
             "id": "job-forward-2",

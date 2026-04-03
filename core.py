@@ -1119,30 +1119,32 @@ def _discover_stream_uncached(
         info["thumbnail"] = meta.get("thumbnail")
 
         extra_streams, extra_options = extract_platform_streams(platform, meta)
+    else:
+        extra_streams, extra_options = [], []
 
-        if platform == "x" and not extra_streams:
-            fallback_streams, fallback_options, fallback_extractor = try_x_fallback_streams(
-                url,
-                info,
-                referer,
-                user_agent,
-                proxy,
-                cookies_path,
-            )
-            extra_streams.extend(fallback_streams)
-            extra_options.extend(fallback_options)
-            if fallback_extractor:
-                info["extractor"] = fallback_extractor
+    if platform == "x" and not extra_streams:
+        fallback_streams, fallback_options, fallback_extractor = try_x_fallback_streams(
+            url,
+            info,
+            referer,
+            user_agent,
+            proxy,
+            cookies_path,
+        )
+        extra_streams.extend(fallback_streams)
+        extra_options.extend(fallback_options)
+        if fallback_extractor:
+            info["extractor"] = fallback_extractor
 
-        if extra_streams:
-            apply_stream_results(
-                info,
-                extra_streams,
-                extra_options,
-                selected_url,
-                selected_index,
-                extractor=info.get("extractor") or "yt-dlp",
-            )
+    if extra_streams:
+        apply_stream_results(
+            info,
+            extra_streams,
+            extra_options,
+            selected_url,
+            selected_index,
+            extractor=info.get("extractor") or "yt-dlp",
+        )
 
     if not info.get("resolved_url") and info.get("streams"):
         info["resolved_url"] = choose_stream_url(info, selected_url, selected_index)
