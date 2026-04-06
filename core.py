@@ -801,6 +801,8 @@ def build_stream_option(url: str, meta: Optional[dict] = None, source: str = "un
     format_note = meta.get("format_note") or meta.get("format_id")
     duration = meta.get("duration")
     tbr = meta.get("tbr")
+    acodec = meta.get("acodec")
+    vcodec = meta.get("vcodec")
     return {
         "url": url,
         "source": source,
@@ -811,6 +813,8 @@ def build_stream_option(url: str, meta: Optional[dict] = None, source: str = "un
         "format_note": format_note,
         "duration": duration,
         "tbr": tbr,
+        "acodec": acodec,
+        "vcodec": vcodec,
     }
 
 
@@ -829,7 +833,9 @@ def choose_best_stream_url(info: dict) -> Optional[str]:
         pixels = width * height
         tbr = float(option.get("tbr") or 0)
         filesize = float(option.get("filesize") or option.get("filesize_approx") or 0)
-        score = pixels * 1_000_000 + tbr * 1_000 + filesize
+        acodec = str(option.get("acodec") or "").lower()
+        has_audio = int(acodec not in {"", "none", "null", "unknown"})
+        score = has_audio * 10_000_000_000_000_000 + pixels * 1_000_000 + tbr * 1_000 + filesize
         if score > best_score:
             best_score = score
             best_stream = stream
@@ -940,8 +946,48 @@ def extract_generic_ytdlp_streams(meta: dict) -> tuple[list[str], list[dict]]:
     return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
+def extract_x_streams(meta: dict) -> tuple[list[str], list[dict]]:
+    streams = []
+    options = []
+
+    direct = meta.get("url")
+    if isinstance(direct, str) and direct and (".mp4" in direct or ".m3u8" in direct):
+        if not is_probably_audio_only_format(meta):
+            streams.append(direct)
+            options.append(build_stream_option(direct, meta, source="yt-dlp-x-direct"))
+
+    for fmt in meta.get("formats", []) or []:
+        fmt_url = fmt.get("url")
+        if not isinstance(fmt_url, str):
+            continue
+        if ".mp4" not in fmt_url and ".m3u8" not in fmt_url:
+            continue
+        if is_probably_audio_only_format(fmt):
+            continue
+
+        vcodec = str(fmt.get("vcodec") or "none").lower()
+        if vcodec in {"none", "null", "unknown"}:
+            continue
+
+        width = fmt.get("width")
+        height = fmt.get("height")
+        if (not width or not height) and isinstance(fmt_url, str):
+            size_match = re.search(r"/vid/[^/]+/(\d+)x(\d+)/", fmt_url)
+            if size_match:
+                width = int(size_match.group(1))
+                height = int(size_match.group(2))
+                fmt = {**fmt, "width": width, "height": height}
+
+        streams.append(fmt_url)
+        options.append(build_stream_option(fmt_url, fmt, source="yt-dlp-x"))
+
+    return dedupe_keep_order(streams), dedupe_stream_options(options)
+
+
 def extract_platform_streams(platform: str, meta: dict) -> tuple[list[str], list[dict]]:
     direct = meta.get("url")
+    if platform == "x":
+        return extract_x_streams(meta)
     if platform == "youtube":
         streams, options = extract_youtube_streams(meta)
         if isinstance(direct, str) and direct and direct not in streams and ('.googlevideo.com/' in direct or '.m3u8' in direct):
