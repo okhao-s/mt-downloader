@@ -20,6 +20,10 @@ RUN pip install --no-cache-dir \
         uvicorn \
         requests \
         yt-dlp \
+        curl-cffi \
+        brotli \
+        certifi \
+        websockets \
         jinja2 \
         python-multipart \
         pycryptodome

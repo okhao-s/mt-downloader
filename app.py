@@ -747,13 +747,11 @@ def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, c
 
 
 def resolve_download_mode(platform: str, stream_url: str | None) -> str:
-    if platform in {"youtube", "bilibili"}:
+    if platform in {"youtube", "bilibili", "x"}:
         return "ytdlp"
     if platform == "douyin":
         if stream_url and not is_m3u8_url(stream_url):
             return "direct"
-        return "ytdlp"
-    if platform == "x" and not stream_url:
         return "ytdlp"
     if stream_url and not is_m3u8_url(stream_url):
         return "direct"

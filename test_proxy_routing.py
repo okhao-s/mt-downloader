@@ -22,8 +22,15 @@ def test_resolve_request_proxy_reuses_default_proxy_and_applies_routing_rules():
     assert app.resolve_request_proxy("https://x.com/user/status/1", None, cfg) == "http://127.0.0.1:7890"
 
 
+def test_resolve_download_mode_uses_ytdlp_for_x_even_when_stream_url_exists():
+    assert app.resolve_download_mode("x", None) == "ytdlp"
+    assert app.resolve_download_mode("x", "https://video.twimg.com/test/master.m3u8") == "ytdlp"
+    assert app.resolve_download_mode("x", "https://video.twimg.com/test/video.mp4") == "ytdlp"
+
+
 if __name__ == "__main__":
     test_route_proxy_for_url_bypasses_douyin_and_bilibili()
     test_route_proxy_for_url_keeps_proxy_for_other_platforms()
     test_resolve_request_proxy_reuses_default_proxy_and_applies_routing_rules()
+    test_resolve_download_mode_uses_ytdlp_for_x_even_when_stream_url_exists()
     print("PASS: test_proxy_routing")
