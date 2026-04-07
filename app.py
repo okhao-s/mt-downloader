@@ -7,7 +7,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlparse
 from uuid import uuid4
 
 import requests
@@ -633,9 +633,11 @@ def get_download_dir() -> Path:
     return DOWNLOAD_DIR
 
 
-def get_download_subdir(url: str | None = None) -> Path:
+def get_download_subdir(url: str | None = None, media_type: str | None = None) -> Path:
     base_dir = get_download_dir()
-    if is_youtube_url(url):
+    if media_type == "image":
+        target = base_dir / "image" / ("x" if is_x_url(url) else (get_platform(url) or "generic"))
+    elif is_youtube_url(url):
         target = base_dir / "youtube"
     elif is_bilibili_url(url):
         target = base_dir / "bilibili"
@@ -647,6 +649,49 @@ def get_download_subdir(url: str | None = None) -> Path:
         target = base_dir / "m3u8"
     target.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def normalize_image_download_url(url: str) -> str:
+    value = str(url or "").strip()
+    if not value:
+        return value
+    if "pbs.twimg.com/media/" not in value:
+        return value
+    base, _, query = value.partition('?')
+    params = {}
+    for part in query.split('&'):
+        if '=' in part:
+            k, v = part.split('=', 1)
+            params[k] = v
+    ext = params.get('format')
+    if not ext:
+        match = re.search(r'\.([a-zA-Z0-9]{3,5})$', urlparse(base).path or '')
+        ext = match.group(1).lower() if match else 'jpg'
+    return f"{base}?format={ext}&name=orig"
+
+
+def infer_extension_from_url(url: str, default: str = ".jpg") -> str:
+    value = str(url or "")
+    parsed = urlparse(value)
+    path = parsed.path or ""
+    match = re.search(r'\.([A-Za-z0-9]{1,10})$', path)
+    if match:
+        return f".{match.group(1).lower()}"
+    params = {}
+    for part in (parsed.query or '').split('&'):
+        if '=' in part:
+            k, v = part.split('=', 1)
+            params[k] = v
+    fmt = str(params.get('format') or '').lower()
+    if re.fullmatch(r'[a-z0-9]{1,10}', fmt):
+        return f'.{fmt}'
+    return default
+
+
+def build_image_output_name(base_name: str, index: int, total: int, image_url: str) -> str:
+    ext = infer_extension_from_url(image_url, default='.jpg')
+    suffix = f' - {index + 1}' if total > 1 else ''
+    return normalize_filename(f"{base_name}{suffix}{ext}")
 
 
 def allocate_output_name(suggested_name: str, download_dir: Path | None = None) -> str:
@@ -746,7 +791,9 @@ def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, c
     return route_proxy_for_url(url, configured_proxy)
 
 
-def resolve_download_mode(platform: str, stream_url: str | None) -> str:
+def resolve_download_mode(platform: str, stream_url: str | None, media_type: str = "video") -> str:
+    if media_type == "image":
+        return "image"
     if platform in {"youtube", "bilibili", "x"}:
         return "ytdlp"
     if platform == "douyin":
@@ -894,8 +941,10 @@ async def parse_url(payload: ParsePayload):
         payload.stream_index,
         cookies_path,
     )
-    if not info.get("resolved_url"):
-        detail = "未解析到可下载视频"
+    has_video = bool(info.get("resolved_url"))
+    has_image = bool(info.get("images"))
+    if not has_video and not has_image:
+        detail = "未解析到可下载媒体"
         if info.get("errors"):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
             if get_platform(input_url) == "bilibili" and should_hint_bilibili_cookies(detail):
@@ -913,11 +962,15 @@ async def parse_url(payload: ParsePayload):
         preview_parts.append(f"user_agent={quote(payload.user_agent, safe='')}")
     if proxy:
         preview_parts.append(f"proxy={quote(proxy, safe='')}")
-    info["preview_url"] = "/api/preview.m3u8?" + "&".join(preview_parts)
+    info["preview_url"] = "/api/preview.m3u8?" + "&".join(preview_parts) if chosen_stream else None
     info["stream_count"] = len(info.get("streams") or [])
+    info["image_count"] = len(info.get("images") or [])
     fallback_prefix = get_platform(input_url) or "video"
+    if info.get("media_type") == "image":
+        fallback_prefix = f"{fallback_prefix}-image"
     info["suggested_output"] = build_suggested_output_name(info.get("title"), fallback_prefix=fallback_prefix)
     return info
+
 
 
 def direct_download(
@@ -962,6 +1015,47 @@ def direct_download(
         progress_callback(100, '下载完成')
 
 
+def download_images(
+    image_urls: list[str],
+    output_dir: Path,
+    base_name: str,
+    referer: str | None = None,
+    user_agent: str | None = None,
+    proxy: str | None = None,
+    progress_callback=None,
+    should_cancel=None,
+) -> list[str]:
+    saved_files: list[str] = []
+    total = len(image_urls)
+    if total <= 0:
+        raise RuntimeError('未解析到可下载图片')
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for index, raw_url in enumerate(image_urls):
+        if should_cancel and should_cancel():
+            raise RuntimeError('下载已取消')
+        image_url = normalize_image_download_url(raw_url)
+        output_name = allocate_output_name(build_image_output_name(base_name, index, total, image_url), download_dir=output_dir)
+        output_path = output_dir / output_name
+        if progress_callback:
+            progress_callback(max(1, min(95, int(index * 100 / total))), f'开始下载图片 {index + 1}/{total}')
+        direct_download(
+            image_url,
+            output_path,
+            referer=referer,
+            user_agent=user_agent,
+            proxy=proxy,
+            progress_callback=None,
+            should_cancel=should_cancel,
+        )
+        saved_files.append(output_name)
+        if progress_callback:
+            progress_callback(max(1, min(99, int((index + 1) * 100 / total))), f'已下载图片 {index + 1}/{total}')
+    if progress_callback:
+        progress_callback(100, '图片下载完成')
+    return saved_files
+
+
 def run_download_job(
     job_id: str,
     preview_url: str,
@@ -1000,7 +1094,23 @@ def run_download_job(
         return False
 
     try:
-        if download_via == "ytdlp":
+        if download_via == "image":
+            if not target_job.get("image_urls"):
+                raise RuntimeError("未解析到可下载图片")
+            update_job(job_id, status="downloading", progress=8, status_text=f"开始下载图片 · 当前下载槽位 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
+            saved_files = download_images(
+                target_job.get("image_urls") or [],
+                Path(str(target_job.get("download_dir") or output_path.parent)),
+                str(target_job.get("output_base") or output_path.stem or "image"),
+                referer=referer,
+                user_agent=user_agent,
+                proxy=proxy,
+                progress_callback=on_progress,
+                should_cancel=should_cancel,
+            )
+            final_output = saved_files[0] if len(saved_files) == 1 else f"{saved_files[0]} 等 {len(saved_files)} 张"
+            update_job(job_id, output=final_output, saved_files=saved_files, image_count=len(saved_files))
+        elif download_via == "ytdlp":
             target_url = source_url or stream_url or preview_url
             cfg = load_config()
             cookies_path = resolve_site_cookies_path(source_url or target_url, cfg)
@@ -1078,19 +1188,24 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             payload.stream_index,
             cookies_path,
         )
-    download_dir = get_download_subdir(input_url)
+    media_type = str(info.get("media_type") or "video")
+    download_dir = get_download_subdir(input_url, media_type=media_type)
     stream_url = payload.stream_url or choose_stream_url(info, payload.stream_url, payload.stream_index)
+    image_urls = info.get("images") or []
     extractor = str(info.get("extractor") or "")
     platform = get_platform(input_url)
     x_url = platform == "x"
     youtube_url = platform == "youtube"
     bilibili_url = platform == "bilibili"
-    use_ytdlp_fallback = (not stream_url and x_url) or youtube_url or bilibili_url or platform == "douyin"
-    if not stream_url and not use_ytdlp_fallback:
+    use_ytdlp_fallback = (not stream_url and x_url and media_type != "image") or youtube_url or bilibili_url or platform == "douyin"
+    if media_type == "image":
+        if not image_urls:
+            raise HTTPException(status_code=404, detail="未解析到可下载图片")
+    elif not stream_url and not use_ytdlp_fallback:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
 
-    suggested_name = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
-    output_name = allocate_output_name(suggested_name, download_dir=download_dir)
+    suggested_name = payload.output or info.get("title") or (f"{platform}-image-{uuid4().hex[:8]}" if media_type == "image" else f"video-{uuid4().hex[:8]}")
+    output_name = allocate_output_name(build_image_output_name(suggested_name, 0, len(image_urls), image_urls[0]) if media_type == "image" else suggested_name, download_dir=download_dir)
     output_path = download_dir / output_name
 
     resp_url = build_preview_url(
@@ -1110,7 +1225,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
 
     queued_ahead = count_queued_jobs()
     active_now = count_active_jobs()
-    download_via = resolve_download_mode(platform, stream_url)
+    download_via = resolve_download_mode(platform, stream_url, media_type=media_type)
     if download_via == "ytdlp" and not payload.output and x_url:
         base_name = info.get("title") or f"x-video-{uuid4().hex[:8]}"
         output_name = allocate_output_name(base_name, download_dir=download_dir)
@@ -1134,6 +1249,11 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "progress": 0,
         "title": info.get("title"),
         "platform": platform,
+        "media_type": media_type,
+        "image_urls": image_urls,
+        "image_count": len(image_urls),
+        "saved_files": [],
+        "output_base": Path(output_name).stem if media_type == "image" else "",
         "error": "",
         "retry_count": retry_count,
         "retry_of": retry_of or "",
@@ -1222,10 +1342,22 @@ async def download_all(request: Request, payload: BatchDownloadPayload):
         cookies_path,
     )
     streams = info.get("streams") or []
-    if not streams:
-        raise HTTPException(status_code=404, detail="未解析到可下载视频")
+    images = info.get("images") or []
+    if not streams and not images:
+        raise HTTPException(status_code=404, detail="未解析到可下载媒体")
 
     platform = get_platform(payload.url)
+    if info.get("media_type") == "image":
+        job_payload = DownloadPayload(
+            url=payload.url,
+            output=payload.output or info.get("title") or f"x-image-{uuid4().hex[:8]}",
+            referer=payload.referer,
+            user_agent=payload.user_agent,
+            proxy=payload.proxy,
+        )
+        job = await run_in_executor(parse_executor, create_download_job, job_payload)
+        return {"ok": True, "title": info.get("title") or job_payload.output, "stream_count": 0, "image_count": len(images), "jobs": [job]}
+
     if platform == "x":
         best_stream = choose_stream_url(info)
         if not best_stream:

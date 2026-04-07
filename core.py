@@ -124,6 +124,17 @@ def is_direct_media_url(url: str) -> bool:
     return any(path.endswith(ext) for ext in (".mp4", ".m4v", ".mov", ".webm", ".mkv", ".flv", ".avi"))
 
 
+def is_direct_image_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    if any(path.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+        return True
+    query = parsed.query or ""
+    if "format=" in query and "pbs.twimg.com/media/" in url:
+        return True
+    return False
+
+
 def detect_platform(url: Optional[str]) -> str:
     value = str(url or "").lower()
     if "x.com/" in value or "twitter.com/" in value:
@@ -492,6 +503,38 @@ def dig_first(value, predicate):
             if found is not None:
                 return found
     return None
+
+
+def extract_x_images_from_graphql_payload(payload: dict) -> dict:
+    result = {"title": None, "thumbnail": None, "images": [], "image_options": []}
+
+    legacy = dig_first(payload, lambda x: isinstance(x, dict) and isinstance(x.get('extended_entities'), dict)) or {}
+    extended = legacy.get('extended_entities') or {}
+    media_list = extended.get('media') or []
+
+    for media in media_list:
+        if not isinstance(media, dict):
+            continue
+        media_type = str(media.get('type') or '').lower()
+        image_url = media.get('media_url_https') or media.get('media_url')
+        if media_type != 'photo' or not isinstance(image_url, str):
+            continue
+        result['thumbnail'] = result['thumbnail'] or image_url
+        result['images'].append(image_url)
+        result['image_options'].append({
+            'url': image_url,
+            'source': 'x-graphql-photo',
+            'type': media_type,
+            'width': media.get('original_info', {}).get('width') if isinstance(media.get('original_info'), dict) else None,
+            'height': media.get('original_info', {}).get('height') if isinstance(media.get('original_info'), dict) else None,
+        })
+
+    note_tweet = dig_first(payload, lambda x: isinstance(x, dict) and (x.get('full_text') or x.get('text')))
+    if isinstance(note_tweet, dict):
+        result['title'] = note_tweet.get('full_text') or note_tweet.get('text')
+
+    result['images'] = dedupe_keep_order(result['images'])
+    return result
 
 
 def extract_x_streams_from_graphql_payload(payload: dict) -> dict:
@@ -946,6 +989,33 @@ def extract_generic_ytdlp_streams(meta: dict) -> tuple[list[str], list[dict]]:
     return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
+def extract_x_images(meta: dict) -> tuple[list[str], list[dict]]:
+    images = []
+    options = []
+
+    for entry in meta.get("thumbnails", []) or []:
+        image_url = entry.get("url")
+        if not isinstance(image_url, str) or not is_direct_image_url(image_url):
+            continue
+        image_id = str(entry.get("id") or "").lower()
+        preference = float(entry.get("preference") or 0)
+        if image_id and not any(token in image_id for token in {"orig", "large", "4096x4096", "2048x2048", "large jpg", "medium"}):
+            if preference < 0:
+                continue
+        images.append(image_url)
+        options.append({
+            "url": image_url,
+            "source": "yt-dlp-x-thumbnail",
+            "type": "image",
+            "width": entry.get("width"),
+            "height": entry.get("height"),
+            "preference": preference,
+            "id": entry.get("id"),
+        })
+
+    return dedupe_keep_order(images), dedupe_stream_options(options)
+
+
 def extract_x_streams(meta: dict) -> tuple[list[str], list[dict]]:
     streams = []
     options = []
@@ -1028,9 +1098,11 @@ def apply_stream_results(info: dict, streams: list[str], options: list[dict], se
     return info
 
 
-def try_x_fallback_streams(url: str, info: dict, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> tuple[list[str], list[dict], Optional[str]]:
+def try_x_fallback_streams(url: str, info: dict, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> tuple[list[str], list[dict], list[str], list[dict], Optional[str]]:
     extra_streams = []
     extra_options = []
+    extra_images = []
+    extra_image_options = []
     extractor = None
 
     try:
@@ -1041,7 +1113,7 @@ def try_x_fallback_streams(url: str, info: dict, referer: Optional[str] = None, 
             extra_options.extend([build_stream_option(s, source="twitter-fallback") for s in fallback_streams])
             if not info.get("title"):
                 info["title"] = extract_title_from_html(html)
-            return extra_streams, extra_options, extractor
+            return extra_streams, extra_options, extra_images, extra_image_options, extractor
     except Exception as html_exc:
         info["errors"].append(f"x-html fallback 失败：{html_exc}")
 
@@ -1052,16 +1124,25 @@ def try_x_fallback_streams(url: str, info: dict, referer: Optional[str] = None, 
             gql_info = extract_x_streams_from_graphql_payload(payload)
             gql_streams = gql_info.get('streams') or []
             gql_options = gql_info.get('stream_options') or []
+            gql_images_info = extract_x_images_from_graphql_payload(payload)
+            gql_images = gql_images_info.get('images') or []
+            gql_image_options = gql_images_info.get('image_options') or []
             if gql_streams:
                 extra_streams.extend(gql_streams)
                 extra_options.extend(gql_options)
                 info['title'] = info.get('title') or gql_info.get('title')
                 info['thumbnail'] = info.get('thumbnail') or gql_info.get('thumbnail')
                 extractor = 'x-graphql'
+            if gql_images:
+                extra_images.extend(gql_images)
+                extra_image_options.extend(gql_image_options)
+                info['title'] = info.get('title') or gql_images_info.get('title')
+                info['thumbnail'] = info.get('thumbnail') or gql_images_info.get('thumbnail')
+                extractor = extractor or 'x-graphql'
         except Exception as gql_exc:
             info['errors'].append(f"x-graphql fallback 失败：{gql_exc}")
 
-    return extra_streams, extra_options, extractor
+    return extra_streams, extra_options, extra_images, extra_image_options, extractor
 
 
 def _build_discover_stream_cache_key(
@@ -1109,6 +1190,9 @@ def _discover_stream_uncached(
         "extractor": None,
         "streams": [],
         "stream_options": [],
+        "images": [],
+        "image_options": [],
+        "media_type": "video",
         "errors": [],
     }
     if is_m3u8_url(url):
@@ -1128,6 +1212,19 @@ def _discover_stream_uncached(
             "extractor": "direct-media",
             "streams": [url],
             "stream_options": [build_stream_option(url, source="direct-media")],
+        })
+        return info
+
+    if is_direct_image_url(url):
+        info.update({
+            "resolved_url": url,
+            "is_m3u8": False,
+            "extractor": "direct-image",
+            "streams": [],
+            "stream_options": [],
+            "images": [url],
+            "image_options": [{"url": url, "source": "direct-image", "type": "image"}],
+            "media_type": "image",
         })
         return info
 
@@ -1165,11 +1262,13 @@ def _discover_stream_uncached(
         info["thumbnail"] = meta.get("thumbnail")
 
         extra_streams, extra_options = extract_platform_streams(platform, meta)
+        extra_images, extra_image_options = extract_x_images(meta) if platform == "x" else ([], [])
     else:
         extra_streams, extra_options = [], []
+        extra_images, extra_image_options = [], []
 
     if platform == "x" and not extra_streams:
-        fallback_streams, fallback_options, fallback_extractor = try_x_fallback_streams(
+        fallback_streams, fallback_options, fallback_images, fallback_image_options, fallback_extractor = try_x_fallback_streams(
             url,
             info,
             referer,
@@ -1179,6 +1278,8 @@ def _discover_stream_uncached(
         )
         extra_streams.extend(fallback_streams)
         extra_options.extend(fallback_options)
+        extra_images.extend(fallback_images)
+        extra_image_options.extend(fallback_image_options)
         if fallback_extractor:
             info["extractor"] = fallback_extractor
 
@@ -1192,6 +1293,14 @@ def _discover_stream_uncached(
             extractor=info.get("extractor") or "yt-dlp",
         )
 
+    if extra_images:
+        info["images"] = dedupe_keep_order((info.get("images") or []) + extra_images)
+        info["image_options"] = dedupe_stream_options((info.get("image_options") or []) + extra_image_options)
+        if info["images"] and not info.get("thumbnail"):
+            info["thumbnail"] = info["images"][0]
+        if not info.get("extractor"):
+            info["extractor"] = "yt-dlp"
+
     if not info.get("resolved_url") and info.get("streams"):
         info["resolved_url"] = choose_stream_url(info, selected_url, selected_index)
         info["is_m3u8"] = True
@@ -1199,6 +1308,11 @@ def _discover_stream_uncached(
 
     if not info.get("stream_options") and info.get("streams"):
         info["stream_options"] = [build_stream_option(s, source="fallback") for s in info["streams"]]
+
+    if info.get("images") and not info.get("streams"):
+        info["media_type"] = "image"
+    else:
+        info["media_type"] = "video"
 
     return info
 

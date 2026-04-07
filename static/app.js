@@ -133,6 +133,16 @@ function renderSummary(items = [], options = {}) {
 }
 
 function showParseSummary(data) {
+  if (data?.media_type === 'image') {
+    renderSummary([
+      { label: '当前状态', value: `解析成功，共找到 ${Number(data?.image_count || (data?.images || []).length || 0)} 张图片`, success: true, highlight: true },
+      { label: '标题', value: data?.title || '未抓到标题' },
+      { label: '默认文件名前缀', value: $('output').value.trim() || '未生成' },
+      { label: '下载目录', value: '/downloads/image/x' },
+      { label: '下一步', value: '这是图片帖，直接点开始下载就行。' },
+    ], { variant: 'success' });
+    return;
+  }
   const preferredIndex = getPreferredStreamIndex(data);
   const preferredOption = preferredIndex !== null ? (data?.stream_options || [])[preferredIndex] || {} : {};
   const isSingleHighest = shouldCollapseToBestOnly(data?.source_url) || Number(data?.stream_count || 0) <= 1;
@@ -437,6 +447,12 @@ function collapseStreamsForDisplay(data) {
 function renderStreamList(data) {
   const options = data?.stream_options || [];
   const streams = data?.streams || [];
+  if (data?.media_type === 'image') {
+    dom.streamPanel.classList.remove('hidden');
+    dom.streamCountTag.textContent = `${Number(data?.image_count || (data?.images || []).length || 0)} images`;
+    dom.streamList.innerHTML = `<div class="summary-empty">这是图片帖，不需要选视频流，直接下载。</div>`;
+    return;
+  }
   if (!streams.length) {
     dom.streamPanel.classList.add('hidden');
     dom.streamList.innerHTML = '';
@@ -597,8 +613,8 @@ async function downloadVideo() {
   try {
     const payload = collect();
     if (!payload.url) throw new Error('链接都没填，下载个锤子。');
-    const isXUrlValue = isXUrl(payload.url);
-    if (state.selectedStreamIndex === null || !state.selectedStreamUrl) {
+    const isImageMode = state.latestParseData?.media_type === 'image';
+    if (!isImageMode && (state.selectedStreamIndex === null || !state.selectedStreamUrl)) {
       throw new Error('先解析出可用视频，再下载。');
     }
     setStatus('创建下载任务…', 'loading');
@@ -607,7 +623,7 @@ async function downloadVideo() {
       { label: '当前状态', value: data?.status_text || '任务已创建' },
       { label: '任务编号', value: data?.id || '未知' },
       { label: '输出文件', value: data?.output || '未知文件' },
-      { label: '所用视频', value: data?.stream_index !== null && data?.stream_index !== undefined ? `视频 ${Number(data.stream_index) + 1}` : '未标记' },
+      { label: '下载类型', value: data?.media_type === 'image' ? `图片 · ${Number(data?.image_count || 0)} 张` : (data?.stream_index !== null && data?.stream_index !== undefined ? `视频 ${Number(data.stream_index) + 1}` : '未标记') },
     ]);
     await refreshJobs();
     setStatus('下载任务已创建', 'success');
