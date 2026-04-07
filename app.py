@@ -636,7 +636,7 @@ def get_download_dir() -> Path:
 def get_download_subdir(url: str | None = None, media_type: str | None = None) -> Path:
     base_dir = get_download_dir()
     if media_type == "image":
-        target = base_dir / "image" / ("x" if is_x_url(url) else (get_platform(url) or "generic"))
+        target = base_dir / "image"
     elif is_youtube_url(url):
         target = base_dir / "youtube"
     elif is_bilibili_url(url):

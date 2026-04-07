@@ -6,15 +6,20 @@ def test_resolve_download_mode_uses_image_for_image_media_type():
     assert app.resolve_download_mode("x", None, media_type="image") == "image"
 
 
-def test_get_download_subdir_uses_image_x_for_x_images():
+def test_get_download_subdir_uses_image_dir_for_x_images():
     path = app.get_download_subdir("https://x.com/user/status/123", media_type="image")
-    assert str(path).endswith("/downloads/image/x")
+    assert str(path).endswith("/downloads/image")
 
 
 def test_build_image_output_name_adds_index_and_ext():
     name = app.build_image_output_name("示例标题", 1, 3, "https://pbs.twimg.com/media/abc123?format=png&name=small")
     assert name.endswith(".png")
     assert "示例标题 - 2" in name
+
+
+def test_normalize_image_download_url_prefers_orig_for_twitter_images():
+    assert app.normalize_image_download_url("https://pbs.twimg.com/media/abc123?format=png&name=small") == "https://pbs.twimg.com/media/abc123?format=png&name=orig"
+    assert app.normalize_image_download_url("https://pbs.twimg.com/media/abc123.jpg") == "https://pbs.twimg.com/media/abc123.jpg?format=jpg&name=orig"
 
 
 def test_discover_stream_marks_x_photo_post_as_image():
@@ -39,7 +44,8 @@ def test_discover_stream_marks_x_photo_post_as_image():
 
 if __name__ == "__main__":
     test_resolve_download_mode_uses_image_for_image_media_type()
-    test_get_download_subdir_uses_image_x_for_x_images()
+    test_get_download_subdir_uses_image_dir_for_x_images()
     test_build_image_output_name_adds_index_and_ext()
+    test_normalize_image_download_url_prefers_orig_for_twitter_images()
     test_discover_stream_marks_x_photo_post_as_image()
     print("PASS: test_x_image_download")

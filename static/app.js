@@ -138,7 +138,7 @@ function showParseSummary(data) {
       { label: '当前状态', value: `解析成功，共找到 ${Number(data?.image_count || (data?.images || []).length || 0)} 张图片`, success: true, highlight: true },
       { label: '标题', value: data?.title || '未抓到标题' },
       { label: '默认文件名前缀', value: $('output').value.trim() || '未生成' },
-      { label: '下载目录', value: '/downloads/image/x' },
+      { label: '下载目录', value: '/downloads/image' },
       { label: '下一步', value: '这是图片帖，直接点开始下载就行。' },
     ], { variant: 'success' });
     return;
