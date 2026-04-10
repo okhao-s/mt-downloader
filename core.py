@@ -13,6 +13,11 @@ from urllib.parse import quote, urljoin, urlparse
 
 import requests
 
+try:
+    from curl_cffi import requests as curl_cffi_requests
+except Exception:
+    curl_cffi_requests = None
+
 CONFIG_PATH = Path(os.getenv("APP_CONFIG_PATH", "/app/data/config.json"))
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
 X_GQL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
@@ -285,29 +290,15 @@ def resolve_uaa_live_room(
     page_title = None
     page_html = ""
     try:
-        page_html = fetch_webpage_html(url, referer=referer, user_agent=user_agent, proxy=proxy)
+        page_html = fetch_uaa_page_html(url, referer=referer, user_agent=user_agent, proxy=proxy)
         title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
         if title_match:
             page_title = unescape(title_match.group(1)).strip()
     except Exception:
         page_html = ""
 
-    headers = build_headers(referer or url, user_agent)
-    headers.update({
-        "Accept": "application/json, text/plain, */*",
-        "X-Requested-With": "XMLHttpRequest",
-        "Origin": f"{parsed.scheme}://{parsed.netloc}",
-    })
-    request_kwargs = {
-        "headers": headers,
-        "proxies": build_proxies(proxy),
-        "timeout": 20,
-    }
-
     api_url = f"{parsed.scheme}://{parsed.netloc}/api/front/v2/models/username/{quote(username)}/cam"
-    response = requests.get(api_url, **request_kwargs)
-    response.raise_for_status()
-    data = response.json()
+    data = uaa_request_json(api_url, referer=referer or url, user_agent=user_agent, proxy=proxy, timeout=20)
 
     api_stream_candidates = _collect_candidate_stream_urls(data)
     api_stream_options = [build_stream_option(stream, source="uaa-auto") for stream in api_stream_candidates]
@@ -320,9 +311,8 @@ def resolve_uaa_live_room(
             f"https://edge-hls.doppiocdn.org/hls/{stream_name}/master/{stream_name}_auto.m3u8"
             f"?playlistType=lowLatency"
         )
-        master_response = requests.get(master_playlist_url, **request_kwargs)
-        master_response.raise_for_status()
-        variant_candidates = _extract_m3u8_variants(master_response.text, master_playlist_url)
+        master_playlist_text = uaa_request_text(master_playlist_url, referer=referer or url, user_agent=user_agent, proxy=proxy, timeout=20)
+        variant_candidates = _extract_m3u8_variants(master_playlist_text, master_playlist_url)
         if variant_candidates:
             variant_urls = [item["url"] for item in variant_candidates]
             option_map = {
@@ -572,6 +562,94 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
     if proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout
     return html
+
+
+def _build_uaa_headers(target_url: str, referer: Optional[str] = None, user_agent: Optional[str] = None) -> dict:
+    parsed = urlparse(target_url)
+    page_url = referer or f"{parsed.scheme}://{parsed.netloc}/"
+    headers = build_headers(page_url, user_agent)
+    headers.update({
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Origin": f"{parsed.scheme}://{parsed.netloc}",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+    return headers
+
+
+def _uaa_curl_request(url: str, headers: dict, proxy: Optional[str] = None, timeout: int = 20) -> str:
+    cmd = ["curl", "-L", "--max-time", str(timeout), "--compressed"]
+    if proxy:
+        cmd += ["-x", proxy]
+    for key, value in (headers or {}).items():
+        if value is None:
+            continue
+        cmd += ["-H", f"{key}: {value}"]
+    cmd.append(url)
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="ignore")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or f"curl exited with code {proc.returncode}").strip()
+        raise RuntimeError(detail[-1000:])
+    return proc.stdout or ""
+
+
+def uaa_request_text(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, timeout: int = 20) -> str:
+    headers = _build_uaa_headers(url, referer=referer, user_agent=user_agent)
+    proxies = build_proxies(proxy)
+    last_error = None
+
+    if curl_cffi_requests is not None:
+        try:
+            resp = curl_cffi_requests.get(
+                url,
+                headers=headers,
+                proxies=proxies,
+                timeout=timeout,
+                impersonate="chrome124",
+            )
+            resp.raise_for_status()
+            text = resp.text or ""
+            if text.strip():
+                return text
+        except Exception as exc:
+            last_error = exc
+
+    try:
+        resp = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
+        resp.raise_for_status()
+        text = resp.text or ""
+        if text.strip():
+            return text
+    except Exception as exc:
+        last_error = exc
+
+    try:
+        text = _uaa_curl_request(url, headers=headers, proxy=proxy, timeout=timeout)
+        if text.strip():
+            return text
+    except Exception as exc:
+        last_error = exc
+
+    if last_error:
+        raise last_error
+    return ""
+
+
+def uaa_request_json(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, timeout: int = 20):
+    text = uaa_request_text(url, referer=referer, user_agent=user_agent, proxy=proxy, timeout=timeout)
+    return json.loads(text)
+
+
+def fetch_uaa_page_html(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> str:
+    try:
+        return uaa_request_text(url, referer=referer or url, user_agent=user_agent, proxy=proxy, timeout=20)
+    except Exception:
+        return fetch_webpage_html(url, referer=referer, user_agent=user_agent, proxy=proxy)
 
 
 def extract_twitter_fallback_streams(html: str) -> list[str]:
