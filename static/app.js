@@ -112,7 +112,7 @@ function collect() {
 function collectLiveRecordPayload() {
   return {
     url: $('url').value.trim(),
-    stream_url: $('url').value.trim(),
+    stream_url: state.selectedStreamUrl || '',
     output: $('output').value.trim(),
     referer: $('referer').value.trim(),
     user_agent: $('user_agent').value.trim(),
@@ -158,17 +158,19 @@ function showParseSummary(data) {
     return;
   }
   const preferredIndex = getPreferredStreamIndex(data);
-  const preferredOption = preferredIndex !== null ? (data?.stream_options || [])[preferredIndex] || {} : {};
+  const preferredOption = preferredIndex !== null ? ((data?.quality_options?.length ? data.quality_options : (data?.stream_options || []))[preferredIndex] || {}) : {};
   const mediaCount = Number(data?.media_entries?.length || 0);
   const videoCount = Number(data?.stream_count || 0);
+  const qualityCount = Number(data?.quality_count || data?.quality_options?.length || 0);
+  const isUaaLive = data?.platform === 'uaa' && qualityCount > 0;
   const multiVideoPost = isXUrl(data?.source_url) && mediaCount > 1;
   const isSingleHighest = !multiVideoPost && (shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
   renderSummary([
-    { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`), success: true, highlight: true },
+    { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isUaaLive ? `解析成功，1 个直播源 / ${qualityCount} 个清晰度候选` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`)), success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
     { label: '默认文件名', value: $('output').value.trim() || '未生成' },
-    { label: multiVideoPost ? '当前选中' : (isSingleHighest ? '当前画质' : '推荐画质'), value: multiVideoPost ? `视频 ${Number((preferredIndex ?? 0) + 1)}` : streamMetaText(preferredOption) },
-    { label: '下一步', value: multiVideoPost ? '这是多视频帖子，点上方列表选第几个视频，再预览或下载。' : (isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个，再预览或下载') },
+    { label: multiVideoPost ? '当前选中' : (isUaaLive ? '默认录制画质' : (isSingleHighest ? '当前画质' : '推荐画质')), value: multiVideoPost ? `视频 ${Number((preferredIndex ?? 0) + 1)}` : streamMetaText(preferredOption) },
+    { label: '下一步', value: multiVideoPost ? '这是多视频帖子，点上方列表选第几个视频，再预览或下载。' : (isUaaLive ? '这是一个直播源，默认会录最高画质；也可以点上方清晰度候选切换后再录制。' : (isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个，再预览或下载')) },
   ], { variant: 'success' });
 }
 
@@ -479,8 +481,8 @@ function collapseStreamsForDisplay(data) {
 }
 
 function renderStreamList(data) {
-  const options = data?.stream_options || [];
-  const streams = data?.streams || [];
+  const options = data?.quality_options?.length ? data.quality_options : (data?.stream_options || []);
+  const streams = data?.quality_options?.length ? options.map(item => item.url).filter(Boolean) : (data?.streams || []);
   if (data?.media_type === 'image') {
     dom.streamPanel.classList.remove('hidden');
     dom.streamCountTag.textContent = `${Number(data?.image_count || (data?.images || []).length || 0)} images`;
@@ -495,14 +497,14 @@ function renderStreamList(data) {
   }
 
   dom.streamPanel.classList.remove('hidden');
-  dom.streamCountTag.textContent = `${streams.length} streams`;
+  dom.streamCountTag.textContent = data?.quality_options?.length ? `${Number(data?.quality_count || streams.length)} qualities` : `${streams.length} streams`;
   dom.streamList.innerHTML = streams.map((stream, index) => {
     const option = options.find(item => item.url === stream) || { url: stream };
     const active = stream === state.selectedStreamUrl || index === state.selectedStreamIndex;
     return `
       <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}">
         <div class="stream-item-title">
-          <span>${shouldCollapseToBestOnly(data?.source_url, data) ? '最高画质' : `视频 ${index + 1}`}</span>
+          <span>${data?.quality_options?.length ? `清晰度 ${index + 1}` : (shouldCollapseToBestOnly(data?.source_url, data) ? '最高画质' : `视频 ${index + 1}`)}</span>
           <span>${active ? '当前选中' : '点击预览'}</span>
         </div>
         <div class="stream-item-meta">${streamMetaText(option)}</div>
@@ -618,7 +620,9 @@ async function parseUrl() {
     if (isXUrl(payload.url) && shownMediaCount > 1) {
       setStatus(`解析完成 · 显示 ${shownMediaCount} 个视频媒体`, 'success');
     } else {
-      setStatus(shownCount > 1 ? `解析完成 · 显示 ${shownCount} 个可用视频` : '解析完成 · 仅显示最高画质', 'success');
+      const qualityCount = Number(state.latestParseData?.quality_count || state.latestParseData?.quality_options?.length || 0);
+      const isUaaLive = state.latestParseData?.platform === 'uaa' && qualityCount > 0;
+      setStatus(isUaaLive ? `解析完成 · 1 个直播源 / ${qualityCount} 个清晰度候选` : (shownCount > 1 ? `解析完成 · 显示 ${shownCount} 个可用视频` : '解析完成 · 仅显示最高画质'), 'success');
     }
   } catch (e) {
     resetPlayer();

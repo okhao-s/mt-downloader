@@ -309,10 +309,12 @@ def resolve_uaa_live_room(
     response.raise_for_status()
     data = response.json()
 
-    stream_candidates = _collect_candidate_stream_urls(data)
-    stream_options = [build_stream_option(stream, source="uaa-auto") for stream in stream_candidates]
+    api_stream_candidates = _collect_candidate_stream_urls(data)
+    api_stream_options = [build_stream_option(stream, source="uaa-auto") for stream in api_stream_candidates]
+    quality_options = list(api_stream_options)
 
     stream_name = str((data.get("cam") or {}).get("streamName") or "").strip()
+    master_playlist_url = ""
     if stream_name:
         master_playlist_url = (
             f"https://edge-hls.doppiocdn.org/hls/{stream_name}/master/{stream_name}_auto.m3u8"
@@ -322,22 +324,35 @@ def resolve_uaa_live_room(
         master_response.raise_for_status()
         variant_candidates = _extract_m3u8_variants(master_response.text, master_playlist_url)
         if variant_candidates:
-            stream_candidates = dedupe_keep_order([item["url"] for item in variant_candidates] + stream_candidates)
-            option_map = {item["url"]: build_stream_option(item["url"], item.get("meta") or {}, source="uaa-hls") for item in variant_candidates}
-            stream_options = [option_map.get(stream) or build_stream_option(stream, source="uaa-auto") for stream in stream_candidates]
+            variant_urls = [item["url"] for item in variant_candidates]
+            option_map = {
+                item["url"]: build_stream_option(item["url"], item.get("meta") or {}, source="uaa-hls")
+                for item in variant_candidates
+            }
+            quality_options = [option_map[url] for url in dedupe_keep_order(variant_urls)]
+            quality_urls = {item.get("url") for item in quality_options}
+            for stream in api_stream_candidates:
+                if stream not in quality_urls:
+                    quality_options.append(build_stream_option(stream, source="uaa-auto"))
         else:
-            stream_candidates = dedupe_keep_order([master_playlist_url] + stream_candidates)
-            stream_options = [build_stream_option(master_playlist_url, {"format_note": "auto"}, source="uaa-hls-master")] + stream_options
+            quality_options = [build_stream_option(master_playlist_url, {"format_note": "auto"}, source="uaa-hls-master")]
+            for stream in api_stream_candidates:
+                if stream != master_playlist_url:
+                    quality_options.append(build_stream_option(stream, source="uaa-auto"))
 
-    if not stream_candidates and page_html:
-        regex_candidates = re.findall(r'https?://[^\"\'\s<>]+(?:\.m3u8|\.flv)[^\"\'\s<>]*', page_html, re.IGNORECASE)
-        stream_candidates = dedupe_keep_order(regex_candidates)
-        if not stream_options:
-            stream_options = [build_stream_option(stream, source="uaa-html") for stream in stream_candidates]
-    if not stream_candidates:
+    if not quality_options and page_html:
+        regex_candidates = re.findall(r"https?://[^\"'\s<>]+(?:\.m3u8|\.flv)[^\"'\s<>]*", page_html, re.IGNORECASE)
+        quality_options = [build_stream_option(stream, source="uaa-html") for stream in dedupe_keep_order(regex_candidates)]
+
+    quality_options = dedupe_stream_options(quality_options)
+    if not quality_options:
         raise ValueError("UAA 房间页未解析到可录制直播流")
 
-    resolved_url = choose_best_stream_url({"streams": stream_candidates, "stream_options": stream_options}) or stream_candidates[0]
+    resolved_url = choose_best_stream_url({
+        "streams": [item.get("url") for item in quality_options if item.get("url")],
+        "stream_options": quality_options,
+    }) or quality_options[0]["url"]
+    primary_option = next((item for item in quality_options if item.get("url") == resolved_url), quality_options[0])
 
     return {
         "source_url": url,
@@ -346,8 +361,10 @@ def resolve_uaa_live_room(
         "thumbnail": None,
         "is_m3u8": ".m3u8" in resolved_url,
         "extractor": "uaa-room",
-        "streams": stream_candidates,
-        "stream_options": stream_options,
+        "streams": [resolved_url],
+        "stream_options": [primary_option],
+        "quality_options": quality_options,
+        "quality_count": len(quality_options),
         "images": [],
         "image_options": [],
         "media_type": "video",
@@ -1076,10 +1093,14 @@ def choose_best_stream_url(info: dict) -> Optional[str]:
 
 def choose_stream_url(info: dict, selected_url: Optional[str] = None, selected_index: Optional[int] = None) -> Optional[str]:
     streams = info.get("streams") or []
+    quality_options = info.get("quality_options") or []
     if selected_url:
         for stream in streams:
             if stream == selected_url:
                 return stream
+        for option in quality_options:
+            if option.get("url") == selected_url:
+                return selected_url
         if ".m3u8" in selected_url:
             return selected_url
     if selected_index is not None and 0 <= selected_index < len(streams):

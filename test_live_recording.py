@@ -96,8 +96,37 @@ def test_create_live_record_job_resolves_uaa_room_page_to_stream_url():
         reset_jobs()
 
 
+def test_create_live_record_job_accepts_uaa_selected_quality_url():
+    reset_jobs()
+    old_executor = app.download_executor
+
+    class DummyExecutor:
+        def submit(self, fn, *args, **kwargs):
+            self.fn = fn
+            self.args = args
+            self.kwargs = kwargs
+            return None
+
+    app.download_executor = DummyExecutor()
+    try:
+        payload = app.LiveRecordPayload(
+            url="https://zh.live.uaa.com/some-room",
+            stream_url="https://edge.example.com/live/480p.m3u8",
+            output="uaa-quality-demo",
+        )
+        job = app.create_live_record_job(payload)
+        assert job["job_type"] == "live_record"
+        assert job["source_url"] == "https://zh.live.uaa.com/some-room"
+        assert job["stream_url"] == "https://edge.example.com/live/480p.m3u8"
+        assert job["title"] == "uaa-quality-demo"
+    finally:
+        app.download_executor = old_executor
+        reset_jobs()
+
+
 if __name__ == "__main__":
     test_create_live_record_job_uses_segment_and_log_metadata()
     test_resolve_recording_extension_prefers_flv_for_flv_stream()
     test_create_live_record_job_resolves_uaa_room_page_to_stream_url()
+    test_create_live_record_job_accepts_uaa_selected_quality_url()
     print("PASS: test_live_recording")

@@ -56,7 +56,10 @@ https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241_480p.m3u8?playlistT
     assert info["resolved_url"].startswith("https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241.m3u8")
     assert info["platform"] == "uaa"
     assert info["extractor"] == "uaa-room"
-    assert len(info["streams"]) == 2
+    assert len(info["streams"]) == 1
+    assert len(info["stream_options"]) == 1
+    assert len(info["quality_options"]) == 2
+    assert info["quality_count"] == 2
 
 
 if __name__ == "__main__":
