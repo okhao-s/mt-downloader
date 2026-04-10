@@ -58,8 +58,10 @@ https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241_480p.m3u8?playlistT
     assert info["extractor"] == "uaa-room"
     assert len(info["streams"]) == 1
     assert len(info["stream_options"]) == 1
-    assert len(info["quality_options"]) == 2
-    assert info["quality_count"] == 2
+    assert len(info["quality_options"]) == 1
+    assert info["quality_count"] == 1
+    assert len(info["all_quality_options"]) == 2
+    assert info["all_quality_count"] == 2
 
 
 if __name__ == "__main__":
