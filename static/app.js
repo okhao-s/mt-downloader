@@ -165,7 +165,7 @@ function showParseSummary(data) {
   const multiVideoPost = isXUrl(data?.source_url) && mediaCount > 1;
   const isSingleHighest = !multiVideoPost && (isUaaLive || shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
   renderSummary([
-    { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`)), success: true, highlight: true },
+    { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`), success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
     { label: '默认文件名', value: $('output').value.trim() || '未生成' },
     { label: multiVideoPost ? '当前选中' : (isSingleHighest ? '当前画质' : '推荐画质'), value: multiVideoPost ? `视频 ${Number((preferredIndex ?? 0) + 1)}` : streamMetaText(preferredOption) },
