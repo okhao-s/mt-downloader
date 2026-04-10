@@ -235,6 +235,39 @@ def _collect_candidate_stream_urls(payload) -> list[str]:
     return dedupe_keep_order(ordered)
 
 
+def _extract_m3u8_variants(playlist_text: str, playlist_url: str) -> list[dict]:
+    variants: list[dict] = []
+    if not playlist_text:
+        return variants
+
+    lines = [line.strip() for line in playlist_text.splitlines()]
+    pending_meta: dict = {}
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith("#EXT-X-STREAM-INF:"):
+            attrs = line.split(":", 1)[1]
+            pending_meta = {}
+            resolution = re.search(r'RESOLUTION=(\d+)x(\d+)', attrs)
+            if resolution:
+                pending_meta["width"] = int(resolution.group(1))
+                pending_meta["height"] = int(resolution.group(2))
+            bandwidth = re.search(r'BANDWIDTH=(\d+)', attrs)
+            if bandwidth:
+                pending_meta["tbr"] = round(int(bandwidth.group(1)) / 1000, 3)
+            name = re.search(r'NAME="([^"]+)"', attrs)
+            if name:
+                pending_meta["format_note"] = name.group(1)
+            continue
+        if pending_meta and not line.startswith("#"):
+            variants.append({
+                "url": urljoin(playlist_url, line),
+                "meta": dict(pending_meta),
+            })
+            pending_meta = {}
+    return variants
+
+
 def resolve_uaa_live_room(
     url: str,
     referer: Optional[str] = None,
@@ -259,29 +292,52 @@ def resolve_uaa_live_room(
     except Exception:
         page_html = ""
 
-    api_url = f"{parsed.scheme}://{parsed.netloc}/v2/models/username/{quote(username)}/cam"
     headers = build_headers(referer or url, user_agent)
     headers.update({
         "Accept": "application/json, text/plain, */*",
         "X-Requested-With": "XMLHttpRequest",
+        "Origin": f"{parsed.scheme}://{parsed.netloc}",
     })
-    response = requests.get(api_url, headers=headers, proxies=build_proxies(proxy), timeout=20)
+    request_kwargs = {
+        "headers": headers,
+        "proxies": build_proxies(proxy),
+        "timeout": 20,
+    }
+
+    api_url = f"{parsed.scheme}://{parsed.netloc}/api/front/v2/models/username/{quote(username)}/cam"
+    response = requests.get(api_url, **request_kwargs)
     response.raise_for_status()
     data = response.json()
 
     stream_candidates = _collect_candidate_stream_urls(data)
+    stream_options = [build_stream_option(stream, source="uaa-auto") for stream in stream_candidates]
+
+    stream_name = str((data.get("cam") or {}).get("streamName") or "").strip()
+    if stream_name:
+        master_playlist_url = (
+            f"https://edge-hls.doppiocdn.org/hls/{stream_name}/master/{stream_name}_auto.m3u8"
+            f"?playlistType=lowLatency"
+        )
+        master_response = requests.get(master_playlist_url, **request_kwargs)
+        master_response.raise_for_status()
+        variant_candidates = _extract_m3u8_variants(master_response.text, master_playlist_url)
+        if variant_candidates:
+            stream_candidates = dedupe_keep_order([item["url"] for item in variant_candidates] + stream_candidates)
+            option_map = {item["url"]: build_stream_option(item["url"], item.get("meta") or {}, source="uaa-hls") for item in variant_candidates}
+            stream_options = [option_map.get(stream) or build_stream_option(stream, source="uaa-auto") for stream in stream_candidates]
+        else:
+            stream_candidates = dedupe_keep_order([master_playlist_url] + stream_candidates)
+            stream_options = [build_stream_option(master_playlist_url, {"format_note": "auto"}, source="uaa-hls-master")] + stream_options
+
     if not stream_candidates and page_html:
         regex_candidates = re.findall(r'https?://[^\"\'\s<>]+(?:\.m3u8|\.flv)[^\"\'\s<>]*', page_html, re.IGNORECASE)
         stream_candidates = dedupe_keep_order(regex_candidates)
+        if not stream_options:
+            stream_options = [build_stream_option(stream, source="uaa-html") for stream in stream_candidates]
     if not stream_candidates:
         raise ValueError("UAA 房间页未解析到可录制直播流")
 
-    resolved_url = stream_candidates[0]
-    stream_options = []
-    for index, stream in enumerate(stream_candidates, start=1):
-        source = "uaa-auto" if index == 1 else "uaa-fallback"
-        quality = "best" if index == 1 else f"fallback-{index - 1}"
-        stream_options.append(build_stream_option(stream, meta={"format_note": f"UAA {quality}"}, source=source))
+    resolved_url = choose_best_stream_url({"streams": stream_candidates, "stream_options": stream_options}) or stream_candidates[0]
 
     return {
         "source_url": url,
