@@ -1290,6 +1290,8 @@ window.deleteJob = deleteJob;
 window.clearHistory = clearHistory;
 window.saveConfig = saveConfig;
 window.uploadTwitterCookies = uploadTwitterCookies;
+window.uploadYouTubeCookies = uploadYouTubeCookies;
+window.uploadBilibiliCookies = uploadBilibiliCookies;
 window.toggleSettingsPanel = toggleSettingsPanel;
 window.toggleHistoryPanel = toggleHistoryPanel;
 
