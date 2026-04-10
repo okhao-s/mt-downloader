@@ -900,3 +900,13 @@ video {
     max-height: 240px;
   }
 }
+
+.action-row-wrap {
+  flex-wrap: wrap;
+}
+
+.btn-live {
+  background: linear-gradient(135deg, #ff5f6d, #ffc371);
+  color: #141414;
+  border: none;
+}

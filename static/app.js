@@ -109,6 +109,20 @@ function collect() {
   };
 }
 
+function collectLiveRecordPayload() {
+  return {
+    url: $('url').value.trim(),
+    stream_url: $('url').value.trim(),
+    output: $('output').value.trim(),
+    referer: $('referer').value.trim(),
+    user_agent: $('user_agent').value.trim(),
+    proxy: $('proxy').value.trim(),
+    segment_minutes: Number($('live_segment_minutes')?.value || 0),
+    max_reconnect_attempts: Number($('live_max_reconnect_attempts')?.value || 0),
+    restart_delay_seconds: Number($('cfg_record_restart_delay_seconds')?.value || 5),
+  };
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -181,6 +195,7 @@ function showConfigSummary(data) {
     { label: '默认代理', value: data?.default_proxy || '未设置' },
     { label: '自动重试', value: data?.auto_retry_enabled ? '已开启' : '未开启' },
     { label: '重试策略', value: `${data?.auto_retry_max_attempts ?? 2} 次 / ${data?.auto_retry_delay_seconds ?? 30}s` },
+    { label: '直播录制', value: `切片 ${Number(data?.record_segment_minutes ?? 30)} 分钟 / 重连 ${Number(data?.record_max_reconnect_attempts ?? 6)} 次 / 等待 ${Number(data?.record_restart_delay_seconds ?? 5)}s` },
     { label: '企业微信', value: data?.wecom_ready ? '配置已就绪' : (data?.wecom_enabled ? '已开启，但参数还没填完整' : '未启用') },
   ]);
 }
@@ -260,6 +275,21 @@ function applyConfigToForm(data = {}) {
   $('cfg_auto_retry_max_attempts').value = Number(data?.auto_retry_max_attempts ?? 2);
   if ($('cfg_xck')) {
     $('cfg_xck').value = data?.xck || data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
+  }
+  if ($('cfg_record_segment_minutes')) {
+    $('cfg_record_segment_minutes').value = Number(data?.record_segment_minutes ?? 30);
+  }
+  if ($('cfg_record_max_reconnect_attempts')) {
+    $('cfg_record_max_reconnect_attempts').value = Number(data?.record_max_reconnect_attempts ?? 6);
+  }
+  if ($('cfg_record_restart_delay_seconds')) {
+    $('cfg_record_restart_delay_seconds').value = Number(data?.record_restart_delay_seconds ?? 5);
+  }
+  if ($('live_segment_minutes')) {
+    $('live_segment_minutes').value = Number(data?.record_segment_minutes ?? 30);
+  }
+  if ($('live_max_reconnect_attempts')) {
+    $('live_max_reconnect_attempts').value = Number(data?.record_max_reconnect_attempts ?? 6);
   }
   if ($('cfg_youtubeck')) {
     $('cfg_youtubeck').value = data?.youtubeck || data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
@@ -654,6 +684,9 @@ async function saveConfig() {
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
       auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),
       auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),
+      record_segment_minutes: Number($('cfg_record_segment_minutes')?.value || 0),
+      record_max_reconnect_attempts: Number($('cfg_record_max_reconnect_attempts')?.value || 0),
+      record_restart_delay_seconds: Number($('cfg_record_restart_delay_seconds')?.value || 5),
       xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
       bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
@@ -775,6 +808,49 @@ async function uploadBilibiliCookies() {
   }
 }
 
+async function startLiveRecord() {
+  try {
+    const payload = collectLiveRecordPayload();
+    if (!payload.stream_url) throw new Error('先填直播流地址。');
+    setStatus('创建录制任务…', 'loading');
+    const data = await api('/api/live-record', payload, 45000);
+    renderSummary([
+      { label: '当前状态', value: data?.status_text || '录制任务已创建' },
+      { label: '任务编号', value: data?.id || '未知' },
+      { label: '输出文件', value: data?.output || '未知文件' },
+      { label: '录制策略', value: `切片 ${Number(data?.segment_minutes || 0)} 分钟 / 重连 ${Number(data?.max_reconnect_attempts || 0)} 次` },
+    ]);
+    await refreshJobs();
+    setStatus('录制任务已创建', 'success');
+  } catch (e) {
+    showError('live-record', e);
+    setStatus(`录制失败：${e.message}`, 'error');
+  }
+}
+
+async function stopJob(jobId) {
+  if (!jobId) return;
+  try {
+    setStatus('停止任务…', 'loading');
+    const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/stop`, {}, 20000);
+    await refreshJobs();
+    setStatus(data?.stopping ? '已请求停止任务' : '任务已停止', 'success');
+  } catch (e) {
+    setStatus(`停止失败：${e.message}`, 'error');
+  }
+}
+
+async function showJobLog(jobId) {
+  if (!jobId) return;
+  try {
+    const data = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/log?lines=80`, { cache: 'no-store' }).then(r => r.json());
+    const content = String(data?.log || '').trim() || '暂无日志';
+    window.alert(content);
+  } catch (e) {
+    setStatus(`查看日志失败：${e.message}`, 'error');
+  }
+}
+
 async function retryJob(jobId) {
   if (!jobId) return;
   try {
@@ -872,10 +948,10 @@ function setHistoryFilter(filter) {
 function jobStatusText(job) {
   const statusMap = {
     queued: '排队中',
-    downloading: '下载中',
-    done: '已完成',
-    failed: '失败',
-    cancelled: '已取消',
+    downloading: job?.job_type === 'live_record' ? '录制中' : '下载中',
+    done: job?.job_type === 'live_record' ? '录制完成' : '已完成',
+    failed: job?.job_type === 'live_record' ? '录制失败' : '失败',
+    cancelled: job?.job_type === 'live_record' ? '已停止' : '已取消',
     retried: '已重试',
   };
   return statusMap[job?.status] || '未知状态';
@@ -885,6 +961,10 @@ function humanizeJobMeta(job) {
   const raw = String(job?.status_text || '').trim();
   if (!raw) return '';
   return raw
+    .replace(/^开始录制直播…\s*/g, '开始录制直播 · ')
+    .replace(/^录制中\s*·\s*/g, '录制中 · ')
+    .replace(/^录制断开，/g, '录制断开，')
+    .replace(/^已请求停止录制，等待 ffmpeg 退出…/g, '已请求停止录制，等待 ffmpeg 退出…')
     .replace(/^正在下载…\s*/g, '')
     .replace(/^激进模式下载中…\s*/g, '正在并发抓分片 · ')
     .replace(/^开始抓取视频（带 cookies）\s*·\s*/g, '开始抓取视频（带登录态） · ')
@@ -984,10 +1064,14 @@ function buildJobCard(job, { compact = false } = {}) {
   const metaText = truncateText(humanizeJobMeta(job), compact ? 92 : 160);
   const retryMeta = Number(job?.retry_count || 0) > 0 ? ` · 第 ${Number(job.retry_count)} 次重试` : '';
   const errorText = job?.error ? truncateText(job.error, compact ? 120 : 240) : '';
-  const actionLabel = status === 'downloading' ? '取消' : '删除';
+  const actionLabel = status === 'downloading' ? (job?.job_type === 'live_record' ? '停止' : '取消') : '删除';
   const retryButton = status === 'failed'
     ? `<button class="btn btn-inline btn-secondary-lite" onclick="retryJob('${escapeHtml(job.id || '')}')">重试</button>`
     : '';
+  const logButton = `<button class="btn btn-inline btn-secondary-lite" onclick="showJobLog('${escapeHtml(job.id || '')}')">日志</button>`;
+  const stopOrDeleteAction = status === 'downloading'
+    ? `<button class="btn btn-inline btn-danger" onclick="stopJob('${escapeHtml(job.id || '')}')">${actionLabel}</button>`
+    : `<button class="btn btn-inline btn-danger" onclick="deleteJob('${escapeHtml(job.id || '')}')">${actionLabel}</button>`;
 
   return `
     <article class="job ${compact ? 'job-compact' : ''} job-status-${escapeHtml(status)}">
@@ -1007,7 +1091,8 @@ function buildJobCard(job, { compact = false } = {}) {
       ${errorText ? `<div class="job-error" title="${escapeHtml(job.error)}">${escapeHtml(errorText)}</div>` : ''}
       <div class="job-actions">
         ${retryButton}
-        <button class="btn btn-inline btn-danger" onclick="deleteJob('${escapeHtml(job.id || '')}')">${actionLabel}</button>
+        ${logButton}
+        ${stopOrDeleteAction}
       </div>
     </article>
   `;
@@ -1195,6 +1280,9 @@ function bindEvents() {
 
 window.parseUrl = parseUrl;
 window.downloadVideo = downloadVideo;
+window.startLiveRecord = startLiveRecord;
+window.stopJob = stopJob;
+window.showJobLog = showJobLog;
 window.retryJob = retryJob;
 window.deleteJob = deleteJob;
 window.clearHistory = clearHistory;

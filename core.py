@@ -50,6 +50,9 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg["wecom_token"] = str(cfg.get("wecom_token") or "")
     cfg["wecom_encoding_aes_key"] = str(cfg.get("wecom_encoding_aes_key") or "")
     cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or "")
+    cfg["record_segment_minutes"] = max(0, int(cfg.get("record_segment_minutes", 30) or 0))
+    cfg["record_max_reconnect_attempts"] = max(0, int(cfg.get("record_max_reconnect_attempts", 6) or 0))
+    cfg["record_restart_delay_seconds"] = max(1, int(cfg.get("record_restart_delay_seconds", 5) or 1))
     return cfg
 
 
@@ -64,6 +67,9 @@ def load_config() -> dict:
         "auto_retry_enabled": False,
         "auto_retry_delay_seconds": 30,
         "auto_retry_max_attempts": 2,
+        "record_segment_minutes": 30,
+        "record_max_reconnect_attempts": 6,
+        "record_restart_delay_seconds": 5,
         "xck": "/app/data/cookies/twitter.cookies.txt",
         "youtubeck": "/app/data/cookies/youtube.cookies.txt",
         "bilibilick": "/app/data/cookies/bilibili.cookies.txt",

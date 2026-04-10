@@ -35,19 +35,30 @@
 
             <div class="module-grid compact-grid">
               <label class="field field-wide">
-                <span>视频 / 网页链接</span>
-                <input id="url" placeholder="https://example.com/watch/123">
+                <span>视频 / 网页链接 / 直播流地址</span>
+                <input id="url" placeholder="https://example.com/watch/123 或 https://live.example.com/index.m3u8">
               </label>
 
               <label class="field field-wide">
                 <span>输出文件名</span>
-                <input id="output" placeholder="自动抓标题并输出 .mp4">
+                <input id="output" placeholder="下载默认 .mp4；录制默认 live-xxxx">
+              </label>
+
+              <label class="field">
+                <span>直播切片（分钟，0=不切）</span>
+                <input id="live_segment_minutes" type="number" min="0" value="30">
+              </label>
+
+              <label class="field">
+                <span>直播最大重连次数</span>
+                <input id="live_max_reconnect_attempts" type="number" min="0" value="6">
               </label>
             </div>
 
-            <div class="action-row">
+            <div class="action-row action-row-wrap">
               <button class="btn btn-secondary" onclick="parseUrl()">解析预览</button>
               <button class="btn btn-primary" onclick="downloadVideo()">开始下载</button>
+              <button class="btn btn-primary btn-live" onclick="startLiveRecord()">开始录制直播</button>
             </div>
 
             <div id="stream-panel" class="result-card stream-panel hidden">
@@ -138,6 +149,21 @@
           <label class="field field-wide">
             <span>默认代理</span>
             <input id="cfg_proxy" value="{{ config.default_proxy }}">
+          </label>
+
+          <label class="field">
+            <span>直播默认切片（分钟，0=不切）</span>
+            <input id="cfg_record_segment_minutes" type="number" min="0" value="{{ config.record_segment_minutes or 30 }}">
+          </label>
+
+          <label class="field">
+            <span>直播默认最大重连次数</span>
+            <input id="cfg_record_max_reconnect_attempts" type="number" min="0" value="{{ config.record_max_reconnect_attempts or 6 }}">
+          </label>
+
+          <label class="field field-wide">
+            <span>直播重连等待（秒）</span>
+            <input id="cfg_record_restart_delay_seconds" type="number" min="1" value="{{ config.record_restart_delay_seconds or 5 }}">
           </label>
 
           <label class="field">
