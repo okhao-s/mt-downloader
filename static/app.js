@@ -145,13 +145,16 @@ function showParseSummary(data) {
   }
   const preferredIndex = getPreferredStreamIndex(data);
   const preferredOption = preferredIndex !== null ? (data?.stream_options || [])[preferredIndex] || {} : {};
-  const isSingleHighest = shouldCollapseToBestOnly(data?.source_url) || Number(data?.stream_count || 0) <= 1;
+  const mediaCount = Number(data?.media_entries?.length || 0);
+  const videoCount = Number(data?.stream_count || 0);
+  const multiVideoPost = isXUrl(data?.source_url) && mediaCount > 1;
+  const isSingleHighest = !multiVideoPost && (shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
   renderSummary([
-    { label: '当前状态', value: isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${data.stream_count} 个视频`, success: true, highlight: true },
+    { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`), success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
     { label: '默认文件名', value: $('output').value.trim() || '未生成' },
-    { label: isSingleHighest ? '当前画质' : '推荐画质', value: streamMetaText(preferredOption) },
-    { label: '下一步', value: isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个，再预览或下载' },
+    { label: multiVideoPost ? '当前选中' : (isSingleHighest ? '当前画质' : '推荐画质'), value: multiVideoPost ? `视频 ${Number((preferredIndex ?? 0) + 1)}` : streamMetaText(preferredOption) },
+    { label: '下一步', value: multiVideoPost ? '这是多视频帖子，点上方列表选第几个视频，再预览或下载。' : (isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个，再预览或下载') },
   ], { variant: 'success' });
 }
 
@@ -425,12 +428,13 @@ function isBilibiliUrl(url = '') {
   return /https?:\/\/(?:www\.)?(?:bilibili\.com|b23\.tv)\//i.test(String(url || ''));
 }
 
-function shouldCollapseToBestOnly(url = '') {
+function shouldCollapseToBestOnly(url = '', data = null) {
+  if (isXUrl(url) && Number(data?.media_entries?.length || 0) > 1) return false;
   return isXUrl(url) || isYouTubeUrl(url) || isBilibiliUrl(url);
 }
 
 function collapseStreamsForDisplay(data) {
-  if (!data || !shouldCollapseToBestOnly(data?.source_url)) return data;
+  if (!data || !shouldCollapseToBestOnly(data?.source_url, data)) return data;
   const preferredIndex = getPreferredStreamIndex(data);
   if (preferredIndex === null || !data?.streams?.[preferredIndex]) return data;
   const preferredUrl = data.streams[preferredIndex];
@@ -468,7 +472,7 @@ function renderStreamList(data) {
     return `
       <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}">
         <div class="stream-item-title">
-          <span>${shouldCollapseToBestOnly(data?.source_url) ? '最高画质' : `视频 ${index + 1}`}</span>
+          <span>${shouldCollapseToBestOnly(data?.source_url, data) ? '最高画质' : `视频 ${index + 1}`}</span>
           <span>${active ? '当前选中' : '点击预览'}</span>
         </div>
         <div class="stream-item-meta">${streamMetaText(option)}</div>
@@ -580,7 +584,12 @@ async function parseUrl() {
     const data = await api('/api/parse', payload);
     applyParseData(data);
     const shownCount = state.latestParseData?.stream_count ?? data.stream_count;
-    setStatus(shownCount > 1 ? `解析完成 · 显示 ${shownCount} 个可用视频` : '解析完成 · 仅显示最高画质', 'success');
+    const shownMediaCount = Number(state.latestParseData?.media_entries?.length || 0);
+    if (isXUrl(payload.url) && shownMediaCount > 1) {
+      setStatus(`解析完成 · 显示 ${shownMediaCount} 个视频媒体`, 'success');
+    } else {
+      setStatus(shownCount > 1 ? `解析完成 · 显示 ${shownCount} 个可用视频` : '解析完成 · 仅显示最高画质', 'success');
+    }
   } catch (e) {
     resetPlayer();
     renderStreamList(null);

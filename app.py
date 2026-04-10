@@ -840,6 +840,7 @@ class ParsePayload(BaseModel):
 
 class DownloadPayload(ParsePayload):
     output: str | None = None
+    media_index: int | None = None
     wecom_to_user: str | None = None
 
 
@@ -1159,6 +1160,11 @@ def run_download_job(
                 schedule_retry(job_id, retry_delay)
 
 
+def build_video_output_name(base_name: str, media_index: int | None = None, total: int | None = None, ext: str = ".mp4") -> str:
+    suffix = f' - {media_index + 1}' if media_index is not None and (total or 0) > 1 else ''
+    return normalize_filename(f"{base_name}{suffix}{ext}")
+
+
 def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     cfg = load_config()
     input_url = normalize_input_url(payload.url)
@@ -1189,8 +1195,12 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             cookies_path,
         )
     media_type = str(info.get("media_type") or "video")
+    media_entries = info.get("media_entries") or []
+    selected_media_entry = None
+    if payload.media_index is not None and 0 <= payload.media_index < len(media_entries):
+        selected_media_entry = media_entries[payload.media_index]
     download_dir = get_download_subdir(input_url, media_type=media_type)
-    stream_url = payload.stream_url or choose_stream_url(info, payload.stream_url, payload.stream_index)
+    stream_url = payload.stream_url or choose_stream_url(selected_media_entry or info, payload.stream_url, payload.stream_index)
     image_urls = info.get("images") or []
     extractor = str(info.get("extractor") or "")
     platform = get_platform(input_url)
@@ -1205,7 +1215,8 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
 
     suggested_name = payload.output or info.get("title") or (f"{platform}-image-{uuid4().hex[:8]}" if media_type == "image" else f"video-{uuid4().hex[:8]}")
-    output_name = allocate_output_name(build_image_output_name(suggested_name, 0, len(image_urls), image_urls[0]) if media_type == "image" else suggested_name, download_dir=download_dir)
+    output_candidate = build_image_output_name(suggested_name, 0, len(image_urls), image_urls[0]) if media_type == "image" else build_video_output_name(suggested_name, payload.media_index, len(media_entries) or 1)
+    output_name = allocate_output_name(output_candidate, download_dir=download_dir)
     output_path = download_dir / output_name
 
     resp_url = build_preview_url(
@@ -1228,7 +1239,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     download_via = resolve_download_mode(platform, stream_url, media_type=media_type)
     if download_via == "ytdlp" and not payload.output and x_url:
         base_name = info.get("title") or f"x-video-{uuid4().hex[:8]}"
-        output_name = allocate_output_name(base_name, download_dir=download_dir)
+        output_name = allocate_output_name(build_video_output_name(base_name, payload.media_index, len(media_entries) or 1), download_dir=download_dir)
         output_path = download_dir / output_name
 
     now = iso_now()
@@ -1237,6 +1248,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "source_url": input_url,
         "stream_url": stream_url,
         "stream_index": payload.stream_index,
+        "media_index": payload.media_index,
         "output": output_name,
         "download_dir": str(download_dir),
         "created_at": now,
@@ -1358,25 +1370,32 @@ async def download_all(request: Request, payload: BatchDownloadPayload):
         job = await run_in_executor(parse_executor, create_download_job, job_payload)
         return {"ok": True, "title": info.get("title") or job_payload.output, "stream_count": 0, "image_count": len(images), "jobs": [job]}
 
-    if platform == "x":
-        best_stream = choose_stream_url(info)
-        if not best_stream:
-            raise HTTPException(status_code=404, detail="未解析到可下载视频")
-        best_index = next((i for i, s in enumerate(streams) if s == best_stream), 0)
-        job_payload = DownloadPayload(
-            url=payload.url,
-            output=payload.output or info.get("title") or f"video-{uuid4().hex[:8]}",
-            referer=payload.referer,
-            user_agent=payload.user_agent,
-            proxy=payload.proxy,
-            stream_url=best_stream,
-            stream_index=best_index,
-        )
-        job = await run_in_executor(parse_executor, create_download_job, job_payload)
-        return {"ok": True, "title": info.get("title") or job_payload.output, "stream_count": 1, "jobs": [job]}
-
     jobs_created = []
+    media_entries = info.get("media_entries") or []
     base_title = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
+
+    if platform == "x" and media_entries:
+        for media_index, media_entry in enumerate(media_entries):
+            best_stream = media_entry.get("best_stream_url") or choose_stream_url(media_entry)
+            if not best_stream:
+                continue
+            entry_streams = media_entry.get("streams") or []
+            best_index = next((i for i, s in enumerate(entry_streams) if s == best_stream), 0)
+            job_payload = DownloadPayload(
+                url=payload.url,
+                output=base_title,
+                referer=payload.referer,
+                user_agent=payload.user_agent,
+                proxy=payload.proxy,
+                stream_url=best_stream,
+                stream_index=best_index,
+                media_index=media_index,
+            )
+            jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
+        if not jobs_created:
+            raise HTTPException(status_code=404, detail="未解析到可下载视频")
+        return {"ok": True, "title": info.get("title") or base_title, "stream_count": len(jobs_created), "jobs": jobs_created}
+
     for index, stream in enumerate(streams):
         suffix_name = f"{base_title} - {index + 1}" if len(streams) > 1 else base_title
         job_payload = DownloadPayload(
