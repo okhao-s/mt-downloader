@@ -31,6 +31,7 @@ from core import (
     ffmpeg_download,
     is_direct_media_url,
     is_m3u8_url,
+    is_uaa_live_room_url,
     load_config,
     normalize_filename,
     rewrite_m3u8_manifest,
@@ -289,10 +290,30 @@ def run_live_record_job(
 
 def create_live_record_job(payload):
     cfg = load_config()
-    stream_url = str(payload.stream_url or payload.url or "").strip()
+    source_url = str(payload.url or "").strip()
+    stream_url = str(payload.stream_url or source_url or "").strip()
     if not stream_url or not re.match(r"^https?://", stream_url, re.IGNORECASE):
         raise HTTPException(status_code=400, detail="请提供直播流地址（http/https）")
-    proxy = resolve_request_proxy(stream_url, payload.proxy, cfg)
+
+    requested_proxy = str(payload.proxy or "").strip()
+    proxy = resolve_request_proxy(stream_url, requested_proxy, cfg)
+    discovery = None
+    if (not payload.stream_url and not (is_m3u8_url(stream_url) or is_direct_media_url(stream_url))) or is_uaa_live_room_url(stream_url):
+        discovery = discover_stream(
+            stream_url,
+            referer=payload.referer,
+            user_agent=payload.user_agent,
+            proxy=proxy,
+        )
+        resolved_stream_url = choose_stream_url(discovery)
+        if not resolved_stream_url:
+            detail = "未解析到可录制直播流"
+            errors = [str(item).strip() for item in (discovery.get("errors") or []) if str(item).strip()]
+            if errors:
+                detail = f"{detail}：{' | '.join(errors[:3])}"
+            raise HTTPException(status_code=400, detail=detail)
+        stream_url = resolved_stream_url
+        proxy = resolve_request_proxy(stream_url, requested_proxy, cfg)
     segment_minutes = max(0, int(payload.segment_minutes if payload.segment_minutes is not None else cfg.get("record_segment_minutes", LIVE_RECORD_DEFAULT_SEGMENT_MINUTES)))
     max_reconnect_attempts = max(0, int(payload.max_reconnect_attempts if payload.max_reconnect_attempts is not None else cfg.get("record_max_reconnect_attempts", LIVE_RECORD_DEFAULT_MAX_RECONNECTS)))
     restart_delay_seconds = max(1, int(payload.restart_delay_seconds if payload.restart_delay_seconds is not None else cfg.get("record_restart_delay_seconds", LIVE_RECORD_DEFAULT_RESTART_DELAY)))
@@ -312,7 +333,7 @@ def create_live_record_job(payload):
     job = ensure_job_log_metadata({
         "id": uuid4().hex[:10],
         "job_type": "live_record",
-        "source_url": stream_url,
+        "source_url": source_url or stream_url,
         "stream_url": stream_url,
         "stream_index": None,
         "media_index": None,
@@ -326,8 +347,8 @@ def create_live_record_job(payload):
         "status": "queued",
         "status_text": "排队中 · 等待开始录制",
         "progress": 0,
-        "title": payload.output or "直播录制",
-        "platform": "generic",
+        "title": payload.output or (discovery or {}).get("title") or "直播录制",
+        "platform": (discovery or {}).get("platform") or detect_platform(source_url or stream_url) or "generic",
         "media_type": "live",
         "image_urls": [],
         "image_count": 0,
@@ -340,7 +361,7 @@ def create_live_record_job(payload):
         "deleted": False,
         "deleted_at": None,
         "download_via": "ffmpeg-live",
-        "extractor": "live-stream-url",
+        "extractor": (discovery or {}).get("extractor") or "live-stream-url",
         "request_payload": payload.model_dump(),
         "wecom_to_user": "",
         "wecom_started_notified": False,

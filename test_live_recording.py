@@ -47,7 +47,57 @@ def test_resolve_recording_extension_prefers_flv_for_flv_stream():
     assert app.resolve_recording_extension("https://example.com/live/index.m3u8") == ".mp4"
 
 
+def test_create_live_record_job_resolves_uaa_room_page_to_stream_url():
+    reset_jobs()
+    old_executor = app.download_executor
+    old_discover_stream = app.discover_stream
+    old_choose_stream_url = app.choose_stream_url
+
+    class DummyExecutor:
+        def submit(self, fn, *args, **kwargs):
+            self.fn = fn
+            self.args = args
+            self.kwargs = kwargs
+            return None
+
+    app.download_executor = DummyExecutor()
+    app.discover_stream = lambda *args, **kwargs: {
+        "resolved_url": "https://edge.example.com/live/master.m3u8",
+        "streams": [
+            "https://edge.example.com/live/master.m3u8",
+            "https://edge.example.com/live/fallback.m3u8",
+        ],
+        "stream_options": [
+            {"url": "https://edge.example.com/live/master.m3u8", "quality": "best"},
+            {"url": "https://edge.example.com/live/fallback.m3u8", "quality": "fallback"},
+        ],
+        "title": "UAA Demo",
+        "platform": "uaa",
+        "extractor": "uaa-room",
+        "errors": [],
+    }
+    app.choose_stream_url = lambda info, *args, **kwargs: info["resolved_url"]
+    try:
+        payload = app.LiveRecordPayload(
+            url="https://zh.live.uaa.com/some-room",
+            output="uaa-demo",
+        )
+        job = app.create_live_record_job(payload)
+        assert job["job_type"] == "live_record"
+        assert job["source_url"] == "https://zh.live.uaa.com/some-room"
+        assert job["stream_url"] == "https://edge.example.com/live/master.m3u8"
+        assert job["platform"] == "uaa"
+        assert job["extractor"] == "uaa-room"
+        assert job["title"] == "uaa-demo"
+    finally:
+        app.download_executor = old_executor
+        app.discover_stream = old_discover_stream
+        app.choose_stream_url = old_choose_stream_url
+        reset_jobs()
+
+
 if __name__ == "__main__":
     test_create_live_record_job_uses_segment_and_log_metadata()
     test_resolve_recording_extension_prefers_flv_for_flv_stream()
+    test_create_live_record_job_resolves_uaa_room_page_to_stream_url()
     print("PASS: test_live_recording")

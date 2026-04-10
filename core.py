@@ -180,6 +180,127 @@ def dedupe_keep_order(items: list[str]) -> list[str]:
     return result
 
 
+def is_uaa_live_room_url(url: Optional[str]) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if (parsed.netloc or "").lower() != "zh.live.uaa.com":
+        return False
+    path = (parsed.path or "").strip("/")
+    return bool(path and "/" not in path)
+
+
+def _collect_candidate_stream_urls(payload) -> list[str]:
+    preferred_keys = [
+        "autoPlaylistUrl",
+        "heightLimitedPlaylistUrl",
+        "fallbackPlaylistUrl",
+        "playlistUrl",
+        "hlsUrl",
+        "flvUrl",
+        "url",
+    ]
+    buckets: dict[str, list[str]] = {key: [] for key in preferred_keys}
+    fallback: list[str] = []
+
+    def add_candidate(key: Optional[str], value: str):
+        if not isinstance(value, str) or not (".m3u8" in value or ".flv" in value):
+            return
+        if key in buckets:
+            buckets[key].append(value)
+        else:
+            fallback.append(value)
+
+    def visit(value):
+        if isinstance(value, dict):
+            for key in preferred_keys:
+                add_candidate(key, value.get(key))
+            for key, item in value.items():
+                if key not in preferred_keys:
+                    add_candidate(key, item)
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, str):
+            add_candidate(None, value)
+
+    visit(payload)
+    ordered: list[str] = []
+    for key in preferred_keys:
+        ordered.extend(buckets[key])
+    ordered.extend(fallback)
+    return dedupe_keep_order(ordered)
+
+
+def resolve_uaa_live_room(
+    url: str,
+    referer: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    proxy: Optional[str] = None,
+) -> Optional[dict]:
+    if not is_uaa_live_room_url(url):
+        return None
+
+    parsed = urlparse(url)
+    username = (parsed.path or "").strip("/")
+    if not username:
+        return None
+
+    page_title = None
+    page_html = ""
+    try:
+        page_html = fetch_webpage_html(url, referer=referer, user_agent=user_agent, proxy=proxy)
+        title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            page_title = unescape(title_match.group(1)).strip()
+    except Exception:
+        page_html = ""
+
+    api_url = f"{parsed.scheme}://{parsed.netloc}/v2/models/username/{quote(username)}/cam"
+    headers = build_headers(referer or url, user_agent)
+    headers.update({
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+    response = requests.get(api_url, headers=headers, proxies=build_proxies(proxy), timeout=20)
+    response.raise_for_status()
+    data = response.json()
+
+    stream_candidates = _collect_candidate_stream_urls(data)
+    if not stream_candidates and page_html:
+        regex_candidates = re.findall(r'https?://[^\"\'\s<>]+(?:\.m3u8|\.flv)[^\"\'\s<>]*', page_html, re.IGNORECASE)
+        stream_candidates = dedupe_keep_order(regex_candidates)
+    if not stream_candidates:
+        raise ValueError("UAA 房间页未解析到可录制直播流")
+
+    resolved_url = stream_candidates[0]
+    stream_options = []
+    for index, stream in enumerate(stream_candidates, start=1):
+        source = "uaa-auto" if index == 1 else "uaa-fallback"
+        quality = "best" if index == 1 else f"fallback-{index - 1}"
+        stream_options.append(build_stream_option(stream, meta={"format_note": f"UAA {quality}"}, source=source))
+
+    return {
+        "source_url": url,
+        "resolved_url": resolved_url,
+        "title": page_title or username,
+        "thumbnail": None,
+        "is_m3u8": ".m3u8" in resolved_url,
+        "extractor": "uaa-room",
+        "streams": stream_candidates,
+        "stream_options": stream_options,
+        "images": [],
+        "image_options": [],
+        "media_type": "video",
+        "errors": [],
+        "media_entries": [],
+        "platform": "uaa",
+    }
+
+
 def dedupe_stream_options(items: list[dict]) -> list[dict]:
     seen = set()
     result = []
@@ -1294,6 +1415,19 @@ def _discover_stream_uncached(
             "media_type": "image",
         })
         return info
+
+    if is_uaa_live_room_url(url):
+        try:
+            uaa_info = resolve_uaa_live_room(url, referer=referer, user_agent=user_agent, proxy=proxy)
+            if uaa_info:
+                if selected_url or selected_index is not None:
+                    chosen_url = choose_stream_url(uaa_info, selected_url, selected_index)
+                    if chosen_url:
+                        uaa_info["resolved_url"] = chosen_url
+                        uaa_info["is_m3u8"] = ".m3u8" in chosen_url
+                return uaa_info
+        except Exception as exc:
+            info["errors"].append(f"uaa 房间解析失败：{exc}")
 
     try:
         page = probe_webpage(url, referer, user_agent, proxy)
