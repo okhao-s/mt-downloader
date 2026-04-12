@@ -64,6 +64,9 @@ https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241_480p.m3u8?playlistT
         assert info["resolved_url"].startswith("https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241.m3u8")
         assert info["platform"] == "uaa"
         assert info["extractor"] == "uaa-room"
+        assert info["media_type"] == "live"
+        assert info["is_live"] is True
+        assert info["live_record_supported"] is True
         assert len(info["streams"]) == 1
         assert len(info["stream_options"]) == 1
         assert len(info["quality_options"]) == 1

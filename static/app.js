@@ -5,6 +5,7 @@ const dom = {
   streamPanel: null,
   streamList: null,
   streamCountTag: null,
+  streamPanelTitle: null,
   output: null,
   jobs: null,
   taskJobs: null,
@@ -56,6 +57,7 @@ function initDom() {
   dom.streamPanel = $('stream-panel');
   dom.streamList = $('stream-list');
   dom.streamCountTag = $('stream-count-tag');
+  dom.streamPanelTitle = $('stream-panel-title');
   dom.output = $('output');
   dom.jobs = $('jobs');
   dom.taskJobs = $('task-jobs');
@@ -147,6 +149,7 @@ function renderSummary(items = [], options = {}) {
 }
 
 function showParseSummary(data) {
+  const isLive = Boolean(data?.is_live || data?.media_type === 'live');
   if (data?.media_type === 'image') {
     renderSummary([
       { label: '当前状态', value: `解析成功，共找到 ${Number(data?.image_count || (data?.images || []).length || 0)} 张图片`, success: true, highlight: true },
@@ -164,6 +167,16 @@ function showParseSummary(data) {
   const isUaaLive = data?.platform === 'uaa';
   const multiVideoPost = isXUrl(data?.source_url) && mediaCount > 1;
   const isSingleHighest = !multiVideoPost && (isUaaLive || shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
+  if (isLive) {
+    renderSummary([
+      { label: '当前状态', value: '解析成功，已识别为直播源', success: true, highlight: true },
+      { label: '标题', value: data?.title || '未抓到标题' },
+      { label: '默认录制文件名', value: $('output').value.trim() || '未生成' },
+      { label: '当前直播源', value: streamMetaText(preferredOption) },
+      { label: '下一步', value: '这是直播录制入口，点“开始录制直播”，不要走普通下载。' },
+    ], { variant: 'success' });
+    return;
+  }
   renderSummary([
     { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`), success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
@@ -482,6 +495,10 @@ function collapseStreamsForDisplay(data) {
 function renderStreamList(data) {
   const options = data?.stream_options || [];
   const streams = data?.streams || [];
+  const isLive = Boolean(data?.is_live || data?.media_type === 'live');
+  if (dom.streamPanelTitle) {
+    dom.streamPanelTitle.textContent = isLive ? '直播流' : '视频列表';
+  }
   if (data?.media_type === 'image') {
     dom.streamPanel.classList.remove('hidden');
     dom.streamCountTag.textContent = `${Number(data?.image_count || (data?.images || []).length || 0)} images`;
@@ -496,15 +513,15 @@ function renderStreamList(data) {
   }
 
   dom.streamPanel.classList.remove('hidden');
-  dom.streamCountTag.textContent = `${streams.length} streams`;
+  dom.streamCountTag.textContent = `${streams.length} ${isLive ? 'live streams' : 'streams'}`;
   dom.streamList.innerHTML = streams.map((stream, index) => {
     const option = options.find(item => item.url === stream) || { url: stream };
     const active = stream === state.selectedStreamUrl || index === state.selectedStreamIndex;
     return `
       <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}">
         <div class="stream-item-title">
-          <span>${shouldCollapseToBestOnly(data?.source_url, data) || data?.platform === 'uaa' ? '最高画质' : `视频 ${index + 1}`}</span>
-          <span>${active ? '当前选中' : '点击预览'}</span>
+          <span>${isLive ? '直播源' : (shouldCollapseToBestOnly(data?.source_url, data) || data?.platform === 'uaa' ? '最高画质' : `视频 ${index + 1}`)}</span>
+          <span>${active ? '当前选中' : (isLive ? '点击预览直播流' : '点击预览')}</span>
         </div>
         <div class="stream-item-meta">${streamMetaText(option)}</div>
         <div class="stream-item-url">${stream}</div>
@@ -616,11 +633,13 @@ async function parseUrl() {
     applyParseData(data);
     const shownCount = state.latestParseData?.stream_count ?? data.stream_count;
     const shownMediaCount = Number(state.latestParseData?.media_entries?.length || 0);
+    const isLive = Boolean(state.latestParseData?.is_live || state.latestParseData?.media_type === 'live');
     if (isXUrl(payload.url) && shownMediaCount > 1) {
       setStatus(`解析完成 · 显示 ${shownMediaCount} 个视频媒体`, 'success');
+    } else if (isLive) {
+      setStatus('解析完成 · 已识别为直播源', 'success');
     } else {
-      const isUaaLive = state.latestParseData?.platform === 'uaa';
-      setStatus((isUaaLive || shownCount <= 1) ? '解析完成 · 仅显示最高画质' : `解析完成 · 显示 ${shownCount} 个可用视频`, 'success');
+      setStatus(shownCount <= 1 ? '解析完成 · 仅显示最高画质' : `解析完成 · 显示 ${shownCount} 个可用视频`, 'success');
     }
   } catch (e) {
     resetPlayer();
@@ -655,6 +674,10 @@ async function downloadVideo() {
     const payload = collect();
     if (!payload.url) throw new Error('链接都没填，下载个锤子。');
     const isImageMode = state.latestParseData?.media_type === 'image';
+    const isLiveMode = Boolean(state.latestParseData?.is_live || state.latestParseData?.media_type === 'live');
+    if (isLiveMode) {
+      throw new Error('这是直播源，请点“开始录制直播”，不要走普通下载。');
+    }
     if (!isImageMode && (state.selectedStreamIndex === null || !state.selectedStreamUrl)) {
       throw new Error('先解析出可用视频，再下载。');
     }
@@ -813,7 +836,8 @@ async function uploadBilibiliCookies() {
 async function startLiveRecord() {
   try {
     const payload = collectLiveRecordPayload();
-    if (!payload.stream_url) throw new Error('先填直播流地址。');
+    if (!payload.url) throw new Error('先贴链接。');
+    if (!payload.stream_url) throw new Error('先解析出直播流，再开始录制。');
     setStatus('创建录制任务…', 'loading');
     const data = await api('/api/live-record', payload, 45000);
     renderSummary([

@@ -975,6 +975,8 @@ def get_download_subdir(url: str | None = None, media_type: str | None = None) -
     base_dir = get_download_dir()
     if media_type == "image":
         target = base_dir / "image"
+    elif media_type == "live":
+        target = base_dir / "live"
     elif is_youtube_url(url):
         target = base_dir / "youtube"
     elif is_bilibili_url(url):
@@ -1319,9 +1321,13 @@ async def parse_url(payload: ParsePayload):
     info["preview_url"] = "/api/preview.m3u8?" + "&".join(preview_parts) if chosen_stream else None
     info["stream_count"] = len(info.get("streams") or [])
     info["image_count"] = len(info.get("images") or [])
+    info["is_live"] = bool(info.get("is_live") or info.get("media_type") == "live")
+    info["live_record_supported"] = bool(info.get("live_record_supported") or info["is_live"])
     fallback_prefix = get_platform(input_url) or "video"
     if info.get("media_type") == "image":
         fallback_prefix = f"{fallback_prefix}-image"
+    elif info["is_live"]:
+        fallback_prefix = f"{fallback_prefix or 'live'}-live"
     info["suggested_output"] = build_suggested_output_name(info.get("title"), fallback_prefix=fallback_prefix)
     return info
 
@@ -1548,6 +1554,9 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             cookies_path,
         )
     media_type = str(info.get("media_type") or "video")
+    is_live = bool(info.get("is_live") or media_type == "live")
+    if is_live:
+        raise HTTPException(status_code=400, detail="这是直播源，请点“开始录制直播”，不要走普通视频下载")
     media_entries = info.get("media_entries") or []
     selected_media_entry = None
     if payload.media_index is not None and 0 <= payload.media_index < len(media_entries):
