@@ -298,6 +298,7 @@ def create_live_record_job(payload):
     cfg = load_config()
     source_url = str(payload.url or "").strip()
     stream_url = str(payload.stream_url or source_url or "").strip()
+    default_referer = str(payload.referer or "").strip()
     if not stream_url or not re.match(r"^https?://", stream_url, re.IGNORECASE):
         raise HTTPException(status_code=400, detail="请提供直播流地址（http/https）")
 
@@ -307,7 +308,7 @@ def create_live_record_job(payload):
     if (not payload.stream_url and not (is_m3u8_url(stream_url) or is_direct_media_url(stream_url))) or is_uaa_live_room_url(stream_url):
         discovery = discover_stream(
             stream_url,
-            referer=payload.referer,
+            referer=default_referer or None,
             user_agent=payload.user_agent,
             proxy=proxy,
         )
@@ -320,6 +321,8 @@ def create_live_record_job(payload):
             raise HTTPException(status_code=400, detail=detail)
         stream_url = resolved_stream_url
         proxy = resolve_request_proxy(stream_url, requested_proxy, cfg)
+        if (discovery or {}).get("platform") == "uaa" and not default_referer:
+            default_referer = str((discovery or {}).get("source_url") or source_url or "").strip()
     segment_minutes = max(0, int(payload.segment_minutes if payload.segment_minutes is not None else cfg.get("record_segment_minutes", LIVE_RECORD_DEFAULT_SEGMENT_MINUTES)))
     max_reconnect_attempts = max(0, int(payload.max_reconnect_attempts if payload.max_reconnect_attempts is not None else cfg.get("record_max_reconnect_attempts", LIVE_RECORD_DEFAULT_MAX_RECONNECTS)))
     restart_delay_seconds = max(1, int(payload.restart_delay_seconds if payload.restart_delay_seconds is not None else cfg.get("record_restart_delay_seconds", LIVE_RECORD_DEFAULT_RESTART_DELAY)))

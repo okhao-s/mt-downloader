@@ -306,6 +306,7 @@ def resolve_uaa_live_room(
 
     stream_name = str((data.get("cam") or {}).get("streamName") or "").strip()
     master_playlist_url = ""
+    primary_option = None
     if stream_name:
         master_playlist_url = (
             f"https://edge-hls.doppiocdn.org/hls/{stream_name}/master/{stream_name}_auto.m3u8"
@@ -324,8 +325,17 @@ def resolve_uaa_live_room(
             for stream in api_stream_candidates:
                 if stream not in quality_urls:
                     quality_options.append(build_stream_option(stream, source="uaa-auto"))
+            best_variant_url = choose_best_stream_url({
+                "streams": [item.get("url") for item in quality_options if item.get("url")],
+                "stream_options": quality_options,
+            })
+            best_variant_option = next((item for item in quality_options if item.get("url") == best_variant_url), quality_options[0])
+            primary_meta = dict(best_variant_option)
+            primary_meta["format_note"] = primary_meta.get("format_note") or "auto"
+            primary_option = build_stream_option(master_playlist_url, primary_meta, source="uaa-hls-master")
         else:
-            quality_options = [build_stream_option(master_playlist_url, {"format_note": "auto"}, source="uaa-hls-master")]
+            primary_option = build_stream_option(master_playlist_url, {"format_note": "auto"}, source="uaa-hls-master")
+            quality_options = [primary_option]
             for stream in api_stream_candidates:
                 if stream != master_playlist_url:
                     quality_options.append(build_stream_option(stream, source="uaa-auto"))
@@ -335,14 +345,16 @@ def resolve_uaa_live_room(
         quality_options = [build_stream_option(stream, source="uaa-html") for stream in dedupe_keep_order(regex_candidates)]
 
     quality_options = dedupe_stream_options(quality_options)
+    if not quality_options and primary_option:
+        quality_options = [primary_option]
     if not quality_options:
         raise ValueError("UAA 房间页未解析到可录制直播流")
 
-    resolved_url = choose_best_stream_url({
+    resolved_url = master_playlist_url or choose_best_stream_url({
         "streams": [item.get("url") for item in quality_options if item.get("url")],
         "stream_options": quality_options,
     }) or quality_options[0]["url"]
-    primary_option = next((item for item in quality_options if item.get("url") == resolved_url), quality_options[0])
+    primary_option = primary_option or next((item for item in quality_options if item.get("url") == resolved_url), quality_options[0])
 
     return {
         "source_url": url,

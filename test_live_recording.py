@@ -94,6 +94,7 @@ def test_create_live_record_job_resolves_uaa_room_page_to_stream_url():
         assert job["source_url"] == "https://zh.live.uaa.com/some-room"
         assert job["stream_url"] == "https://edge.example.com/live/master.m3u8"
         assert job["platform"] == "uaa"
+        assert app.download_executor.kwargs["referer"] == "https://zh.live.uaa.com/some-room"
         assert job["extractor"] == "uaa-room"
         assert job["title"] == "uaa-demo"
     finally:

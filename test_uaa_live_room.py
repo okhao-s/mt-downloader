@@ -61,7 +61,10 @@ https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241_480p.m3u8?playlistT
         info = core.resolve_uaa_live_room("https://zh.live.uaa.com/GG-BONG1")
         assert any("/api/front/v2/models/username/GG-BONG1/cam" in url for url in calls)
         assert any("edge-hls.doppiocdn.org/hls/228402241/master/228402241_auto.m3u8" in url for url in calls)
-        assert info["resolved_url"].startswith("https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241.m3u8")
+        assert info["resolved_url"] == "https://edge-hls.doppiocdn.org/hls/228402241/master/228402241_auto.m3u8?playlistType=lowLatency"
+        assert info["stream_options"][0]["url"] == info["resolved_url"]
+        assert info["stream_options"][0]["source"] == "uaa-hls-master"
+        assert info["all_quality_options"][0]["url"].startswith("https://media-hls.doppiocdn.org/b-hls-20/228402241/228402241.m3u8")
         assert info["platform"] == "uaa"
         assert info["extractor"] == "uaa-room"
         assert info["media_type"] == "live"
