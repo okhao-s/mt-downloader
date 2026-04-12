@@ -1299,7 +1299,8 @@ async def parse_url(payload: ParsePayload):
     )
     has_video = bool(info.get("resolved_url"))
     has_image = bool(info.get("images"))
-    if not has_video and not has_image:
+    is_live_semantic = bool(info.get("is_live") or info.get("media_type") == "live")
+    if not has_video and not has_image and not is_live_semantic:
         detail = "未解析到可下载媒体"
         if info.get("errors"):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
@@ -1322,7 +1323,10 @@ async def parse_url(payload: ParsePayload):
     info["stream_count"] = len(info.get("streams") or [])
     info["image_count"] = len(info.get("images") or [])
     info["is_live"] = bool(info.get("is_live") or info.get("media_type") == "live")
-    info["live_record_supported"] = bool(info.get("live_record_supported") or info["is_live"])
+    if "live_record_supported" in info:
+        info["live_record_supported"] = bool(info.get("live_record_supported"))
+    else:
+        info["live_record_supported"] = info["is_live"]
     fallback_prefix = get_platform(input_url) or "video"
     if info.get("media_type") == "image":
         fallback_prefix = f"{fallback_prefix}-image"

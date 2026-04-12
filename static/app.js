@@ -168,12 +168,13 @@ function showParseSummary(data) {
   const multiVideoPost = isXUrl(data?.source_url) && mediaCount > 1;
   const isSingleHighest = !multiVideoPost && (isUaaLive || shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
   if (isLive) {
+    const hasLiveStream = Boolean((data?.streams || []).length && (data?.resolved_url || preferredOption?.url));
     renderSummary([
-      { label: '当前状态', value: '解析成功，已识别为直播源', success: true, highlight: true },
+      { label: '当前状态', value: hasLiveStream ? '解析成功，已识别为直播源' : '已识别为直播房间，但当前没拿到可录制直播流', success: true, highlight: true },
       { label: '标题', value: data?.title || '未抓到标题' },
       { label: '默认录制文件名', value: $('output').value.trim() || '未生成' },
-      { label: '当前直播源', value: streamMetaText(preferredOption) },
-      { label: '下一步', value: '这是直播录制入口，点“开始录制直播”，不要走普通下载。' },
+      { label: '当前直播源', value: hasLiveStream ? streamMetaText(preferredOption) : '暂无可录制直播流' },
+      { label: '下一步', value: hasLiveStream ? '这是直播录制入口，点“开始录制直播”，不要走普通下载。' : '先等主播开播或确认房间当前是否有 HLS/FLV 直播流。' },
     ], { variant: 'success' });
     return;
   }

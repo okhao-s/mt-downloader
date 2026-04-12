@@ -1587,6 +1587,12 @@ def _discover_stream_uncached(
                 return uaa_info
         except Exception as exc:
             info["errors"].append(f"uaa 房间解析失败：{exc}")
+            info["media_type"] = "live"
+            info["is_live"] = True
+            info["live_record_supported"] = False
+            info["platform"] = "uaa"
+            info["extractor"] = info.get("extractor") or "uaa-room"
+            return info
 
     try:
         page = probe_webpage(url, referer, user_agent, proxy)
