@@ -133,7 +133,7 @@ def ensure_job_log_metadata(job: dict) -> dict:
 
 
 def build_live_segment_pattern(base_name: str, ext: str = ".mp4") -> str:
-    return normalize_filename(f"{base_name} - %Y%m%d-%H%M%S{ext}")
+    return normalize_filename(f"{base_name}_%Y%m%d-%H%M%S{ext}")
 
 
 def create_live_ffmpeg_command(
@@ -151,19 +151,25 @@ def create_live_ffmpeg_command(
     if referer:
         header_lines.append(f"Referer: {referer}")
 
+    parsed_stream = urlparse(stream_url)
+    stream_scheme = (parsed_stream.scheme or "").lower()
+    is_http_input = stream_scheme in {"http", "https"}
+
     cmd = ["ffmpeg", "-y", "-nostdin", "-loglevel", "info"]
     if proxy:
         cmd += ["-http_proxy", proxy]
     if header_lines:
         cmd += ["-headers", "\r\n".join(header_lines) + "\r\n"]
+    if is_http_input:
+        cmd += [
+            "-rw_timeout", "15000000",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_on_network_error", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_delay_max", "5",
+        ]
     cmd += [
-        "-rw_timeout", "15000000",
-        "-timeout", "15000000",
-        "-reconnect", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_on_network_error", "1",
-        "-reconnect_delay_max", "5",
-        "-reconnect_at_eof", "1",
         "-i", stream_url,
         "-map", "0",
         "-dn",

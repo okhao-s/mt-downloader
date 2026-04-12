@@ -103,8 +103,46 @@ def test_create_live_record_job_resolves_uaa_room_page_to_stream_url():
         reset_jobs()
 
 
+def test_create_live_ffmpeg_command_uses_http_safe_reconnect_flags_only():
+    cmd = app.create_live_ffmpeg_command(
+        "https://example.com/live/test.m3u8",
+        Path("/tmp/demo_%Y%m%d-%H%M%S.mp4"),
+        referer="https://example.com/room",
+        user_agent="demo-agent",
+        proxy="http://127.0.0.1:8080",
+        segment_minutes=15,
+    )
+    assert "-rw_timeout" in cmd
+    assert "-timeout" not in cmd
+    assert "-reconnect" in cmd
+    assert "-reconnect_streamed" in cmd
+    assert "-reconnect_on_network_error" in cmd
+    assert "-reconnect_at_eof" in cmd
+    assert "-reconnect_delay_max" in cmd
+    assert "-http_proxy" in cmd
+    assert "-headers" in cmd
+
+
+def test_create_live_ffmpeg_command_skips_http_only_flags_for_file_inputs():
+    cmd = app.create_live_ffmpeg_command(
+        "file:///tmp/input.mp4",
+        Path("/tmp/output.mp4"),
+    )
+    assert "-rw_timeout" not in cmd
+    assert "-reconnect" not in cmd
+    assert "-timeout" not in cmd
+
+
+def test_build_live_segment_pattern_is_clean():
+    pattern = app.build_live_segment_pattern("demo-live")
+    assert pattern == "demo-live_%Y%m%d-%H%M%S.mp4"
+
+
 if __name__ == "__main__":
     test_create_live_record_job_uses_segment_and_log_metadata()
     test_resolve_recording_extension_prefers_flv_for_flv_stream()
     test_create_live_record_job_resolves_uaa_room_page_to_stream_url()
+    test_create_live_ffmpeg_command_uses_http_safe_reconnect_flags_only()
+    test_create_live_ffmpeg_command_skips_http_only_flags_for_file_inputs()
+    test_build_live_segment_pattern_is_clean()
     print("PASS: test_live_recording")
