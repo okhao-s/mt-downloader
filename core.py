@@ -13,11 +13,6 @@ from urllib.parse import quote, urljoin, urlparse
 
 import requests
 
-try:
-    from curl_cffi import requests as curl_cffi_requests
-except Exception:
-    curl_cffi_requests = None
-
 CONFIG_PATH = Path(os.getenv("APP_CONFIG_PATH", "/app/data/config.json"))
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
 X_GQL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
@@ -55,9 +50,6 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg["wecom_token"] = str(cfg.get("wecom_token") or "")
     cfg["wecom_encoding_aes_key"] = str(cfg.get("wecom_encoding_aes_key") or "")
     cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or "")
-    cfg["record_segment_minutes"] = max(0, int(cfg.get("record_segment_minutes", 30) or 0))
-    cfg["record_max_reconnect_attempts"] = max(0, int(cfg.get("record_max_reconnect_attempts", 6) or 0))
-    cfg["record_restart_delay_seconds"] = max(1, int(cfg.get("record_restart_delay_seconds", 5) or 1))
     return cfg
 
 
@@ -72,9 +64,6 @@ def load_config() -> dict:
         "auto_retry_enabled": False,
         "auto_retry_delay_seconds": 30,
         "auto_retry_max_attempts": 2,
-        "record_segment_minutes": 30,
-        "record_max_reconnect_attempts": 6,
-        "record_restart_delay_seconds": 5,
         "xck": "/app/data/cookies/twitter.cookies.txt",
         "youtubeck": "/app/data/cookies/youtube.cookies.txt",
         "bilibilick": "/app/data/cookies/bilibili.cookies.txt",
@@ -183,201 +172,6 @@ def dedupe_keep_order(items: list[str]) -> list[str]:
             seen.add(item)
             result.append(item)
     return result
-
-
-def is_uaa_live_room_url(url: Optional[str]) -> bool:
-    if not url:
-        return False
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        return False
-    if (parsed.netloc or "").lower() != "zh.live.uaa.com":
-        return False
-    path = (parsed.path or "").strip("/")
-    return bool(path and "/" not in path)
-
-
-def _collect_candidate_stream_urls(payload) -> list[str]:
-    preferred_keys = [
-        "autoPlaylistUrl",
-        "heightLimitedPlaylistUrl",
-        "fallbackPlaylistUrl",
-        "playlistUrl",
-        "hlsUrl",
-        "flvUrl",
-        "url",
-    ]
-    buckets: dict[str, list[str]] = {key: [] for key in preferred_keys}
-    fallback: list[str] = []
-
-    def add_candidate(key: Optional[str], value: str):
-        if not isinstance(value, str) or not (".m3u8" in value or ".flv" in value):
-            return
-        if key in buckets:
-            buckets[key].append(value)
-        else:
-            fallback.append(value)
-
-    def visit(value):
-        if isinstance(value, dict):
-            for key in preferred_keys:
-                add_candidate(key, value.get(key))
-            for key, item in value.items():
-                if key not in preferred_keys:
-                    add_candidate(key, item)
-                visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-        elif isinstance(value, str):
-            add_candidate(None, value)
-
-    visit(payload)
-    ordered: list[str] = []
-    for key in preferred_keys:
-        ordered.extend(buckets[key])
-    ordered.extend(fallback)
-    return dedupe_keep_order(ordered)
-
-
-def _extract_m3u8_variants(playlist_text: str, playlist_url: str) -> list[dict]:
-    variants: list[dict] = []
-    if not playlist_text:
-        return variants
-
-    lines = [line.strip() for line in playlist_text.splitlines()]
-    pending_meta: dict = {}
-    for line in lines:
-        if not line:
-            continue
-        if line.startswith("#EXT-X-STREAM-INF:"):
-            attrs = line.split(":", 1)[1]
-            pending_meta = {}
-            resolution = re.search(r'RESOLUTION=(\d+)x(\d+)', attrs)
-            if resolution:
-                pending_meta["width"] = int(resolution.group(1))
-                pending_meta["height"] = int(resolution.group(2))
-            bandwidth = re.search(r'BANDWIDTH=(\d+)', attrs)
-            if bandwidth:
-                pending_meta["tbr"] = round(int(bandwidth.group(1)) / 1000, 3)
-            name = re.search(r'NAME="([^"]+)"', attrs)
-            if name:
-                pending_meta["format_note"] = name.group(1)
-            continue
-        if pending_meta and not line.startswith("#"):
-            variants.append({
-                "url": urljoin(playlist_url, line),
-                "meta": dict(pending_meta),
-            })
-            pending_meta = {}
-    return variants
-
-
-def resolve_uaa_live_room(
-    url: str,
-    referer: Optional[str] = None,
-    user_agent: Optional[str] = None,
-    proxy: Optional[str] = None,
-) -> Optional[dict]:
-    if not is_uaa_live_room_url(url):
-        return None
-
-    parsed = urlparse(url)
-    username = (parsed.path or "").strip("/")
-    if not username:
-        return None
-
-    page_title = None
-    page_html = ""
-    try:
-        page_html = fetch_uaa_page_html(url, referer=referer, user_agent=user_agent, proxy=proxy)
-        title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
-        if title_match:
-            page_title = unescape(title_match.group(1)).strip()
-    except Exception:
-        page_html = ""
-
-    api_url = f"{parsed.scheme}://{parsed.netloc}/api/front/v2/models/username/{quote(username)}/cam"
-    data = uaa_request_json(api_url, referer=referer or url, user_agent=user_agent, proxy=proxy, timeout=20)
-
-    api_stream_candidates = _collect_candidate_stream_urls(data)
-    api_stream_options = [build_stream_option(stream, source="uaa-auto") for stream in api_stream_candidates]
-    quality_options = list(api_stream_options)
-
-    stream_name = str((data.get("cam") or {}).get("streamName") or "").strip()
-    master_playlist_url = ""
-    primary_option = None
-    if stream_name:
-        master_playlist_url = (
-            f"https://edge-hls.doppiocdn.org/hls/{stream_name}/master/{stream_name}_auto.m3u8"
-            f"?playlistType=lowLatency"
-        )
-        master_playlist_text = uaa_request_text(master_playlist_url, referer=referer or url, user_agent=user_agent, proxy=proxy, timeout=20)
-        variant_candidates = _extract_m3u8_variants(master_playlist_text, master_playlist_url)
-        if variant_candidates:
-            variant_urls = [item["url"] for item in variant_candidates]
-            option_map = {
-                item["url"]: build_stream_option(item["url"], item.get("meta") or {}, source="uaa-hls")
-                for item in variant_candidates
-            }
-            quality_options = [option_map[url] for url in dedupe_keep_order(variant_urls)]
-            quality_urls = {item.get("url") for item in quality_options}
-            for stream in api_stream_candidates:
-                if stream not in quality_urls:
-                    quality_options.append(build_stream_option(stream, source="uaa-auto"))
-            best_variant_url = choose_best_stream_url({
-                "streams": [item.get("url") for item in quality_options if item.get("url")],
-                "stream_options": quality_options,
-            })
-            best_variant_option = next((item for item in quality_options if item.get("url") == best_variant_url), quality_options[0])
-            primary_meta = dict(best_variant_option)
-            primary_meta["format_note"] = primary_meta.get("format_note") or "auto"
-            primary_option = build_stream_option(master_playlist_url, primary_meta, source="uaa-hls-master")
-        else:
-            primary_option = build_stream_option(master_playlist_url, {"format_note": "auto"}, source="uaa-hls-master")
-            quality_options = [primary_option]
-            for stream in api_stream_candidates:
-                if stream != master_playlist_url:
-                    quality_options.append(build_stream_option(stream, source="uaa-auto"))
-
-    if not quality_options and page_html:
-        regex_candidates = re.findall(r"https?://[^\"'\s<>]+(?:\.m3u8|\.flv)[^\"'\s<>]*", page_html, re.IGNORECASE)
-        quality_options = [build_stream_option(stream, source="uaa-html") for stream in dedupe_keep_order(regex_candidates)]
-
-    quality_options = dedupe_stream_options(quality_options)
-    if not quality_options and primary_option:
-        quality_options = [primary_option]
-    if not quality_options:
-        raise ValueError("UAA 房间页未解析到可录制直播流")
-
-    resolved_url = master_playlist_url or choose_best_stream_url({
-        "streams": [item.get("url") for item in quality_options if item.get("url")],
-        "stream_options": quality_options,
-    }) or quality_options[0]["url"]
-    primary_option = primary_option or next((item for item in quality_options if item.get("url") == resolved_url), quality_options[0])
-
-    return {
-        "source_url": url,
-        "resolved_url": resolved_url,
-        "title": page_title or username,
-        "thumbnail": None,
-        "is_m3u8": ".m3u8" in resolved_url,
-        "extractor": "uaa-room",
-        "streams": [resolved_url],
-        "stream_options": [primary_option],
-        "quality_options": [primary_option],
-        "quality_count": 1,
-        "all_quality_options": quality_options,
-        "all_quality_count": len(quality_options),
-        "images": [],
-        "image_options": [],
-        "media_type": "live",
-        "is_live": True,
-        "live_record_supported": True,
-        "errors": [],
-        "media_entries": [],
-        "platform": "uaa",
-    }
 
 
 def dedupe_stream_options(items: list[dict]) -> list[dict]:
@@ -576,94 +370,6 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
     if proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout
     return html
-
-
-def _build_uaa_headers(target_url: str, referer: Optional[str] = None, user_agent: Optional[str] = None) -> dict:
-    parsed = urlparse(target_url)
-    page_url = referer or f"{parsed.scheme}://{parsed.netloc}/"
-    headers = build_headers(page_url, user_agent)
-    headers.update({
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Origin": f"{parsed.scheme}://{parsed.netloc}",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "X-Requested-With": "XMLHttpRequest",
-    })
-    return headers
-
-
-def _uaa_curl_request(url: str, headers: dict, proxy: Optional[str] = None, timeout: int = 20) -> str:
-    cmd = ["curl", "-L", "--max-time", str(timeout), "--compressed"]
-    if proxy:
-        cmd += ["-x", proxy]
-    for key, value in (headers or {}).items():
-        if value is None:
-            continue
-        cmd += ["-H", f"{key}: {value}"]
-    cmd.append(url)
-    proc = subprocess.run(cmd, capture_output=True, text=True, errors="ignore")
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or f"curl exited with code {proc.returncode}").strip()
-        raise RuntimeError(detail[-1000:])
-    return proc.stdout or ""
-
-
-def uaa_request_text(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, timeout: int = 20) -> str:
-    headers = _build_uaa_headers(url, referer=referer, user_agent=user_agent)
-    proxies = build_proxies(proxy)
-    last_error = None
-
-    if curl_cffi_requests is not None:
-        try:
-            resp = curl_cffi_requests.get(
-                url,
-                headers=headers,
-                proxies=proxies,
-                timeout=timeout,
-                impersonate="chrome124",
-            )
-            resp.raise_for_status()
-            text = resp.text or ""
-            if text.strip():
-                return text
-        except Exception as exc:
-            last_error = exc
-
-    try:
-        resp = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
-        resp.raise_for_status()
-        text = resp.text or ""
-        if text.strip():
-            return text
-    except Exception as exc:
-        last_error = exc
-
-    try:
-        text = _uaa_curl_request(url, headers=headers, proxy=proxy, timeout=timeout)
-        if text.strip():
-            return text
-    except Exception as exc:
-        last_error = exc
-
-    if last_error:
-        raise last_error
-    return ""
-
-
-def uaa_request_json(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, timeout: int = 20):
-    text = uaa_request_text(url, referer=referer, user_agent=user_agent, proxy=proxy, timeout=timeout)
-    return json.loads(text)
-
-
-def fetch_uaa_page_html(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> str:
-    try:
-        return uaa_request_text(url, referer=referer or url, user_agent=user_agent, proxy=proxy, timeout=20)
-    except Exception:
-        return fetch_webpage_html(url, referer=referer, user_agent=user_agent, proxy=proxy)
 
 
 def extract_twitter_fallback_streams(html: str) -> list[str]:
@@ -1187,14 +893,10 @@ def choose_best_stream_url(info: dict) -> Optional[str]:
 
 def choose_stream_url(info: dict, selected_url: Optional[str] = None, selected_index: Optional[int] = None) -> Optional[str]:
     streams = info.get("streams") or []
-    quality_options = info.get("quality_options") or []
     if selected_url:
         for stream in streams:
             if stream == selected_url:
                 return stream
-        for option in quality_options:
-            if option.get("url") == selected_url:
-                return selected_url
         if ".m3u8" in selected_url:
             return selected_url
     if selected_index is not None and 0 <= selected_index < len(streams):
@@ -1586,25 +1288,6 @@ def _discover_stream_uncached(
             "media_type": "image",
         })
         return info
-
-    if is_uaa_live_room_url(url):
-        try:
-            uaa_info = resolve_uaa_live_room(url, referer=referer, user_agent=user_agent, proxy=proxy)
-            if uaa_info:
-                if selected_url or selected_index is not None:
-                    chosen_url = choose_stream_url(uaa_info, selected_url, selected_index)
-                    if chosen_url:
-                        uaa_info["resolved_url"] = chosen_url
-                        uaa_info["is_m3u8"] = ".m3u8" in chosen_url
-                return uaa_info
-        except Exception as exc:
-            info["errors"].append(f"uaa 房间解析失败：{exc}")
-            info["media_type"] = "live"
-            info["is_live"] = True
-            info["live_record_supported"] = False
-            info["platform"] = "uaa"
-            info["extractor"] = info.get("extractor") or "uaa-room"
-            return info
 
     try:
         page = probe_webpage(url, referer, user_agent, proxy)

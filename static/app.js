@@ -5,7 +5,6 @@ const dom = {
   streamPanel: null,
   streamList: null,
   streamCountTag: null,
-  streamPanelTitle: null,
   output: null,
   jobs: null,
   taskJobs: null,
@@ -57,7 +56,6 @@ function initDom() {
   dom.streamPanel = $('stream-panel');
   dom.streamList = $('stream-list');
   dom.streamCountTag = $('stream-count-tag');
-  dom.streamPanelTitle = $('stream-panel-title');
   dom.output = $('output');
   dom.jobs = $('jobs');
   dom.taskJobs = $('task-jobs');
@@ -111,20 +109,6 @@ function collect() {
   };
 }
 
-function collectLiveRecordPayload() {
-  return {
-    url: $('url').value.trim(),
-    stream_url: state.selectedStreamUrl || '',
-    output: $('output').value.trim(),
-    referer: $('referer').value.trim(),
-    user_agent: $('user_agent').value.trim(),
-    proxy: $('proxy').value.trim(),
-    segment_minutes: Number($('live_segment_minutes')?.value || 0),
-    max_reconnect_attempts: Number($('live_max_reconnect_attempts')?.value || 0),
-    restart_delay_seconds: Number($('cfg_record_restart_delay_seconds')?.value || 5),
-  };
-}
-
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -149,7 +133,6 @@ function renderSummary(items = [], options = {}) {
 }
 
 function showParseSummary(data) {
-  const isLive = Boolean(data?.is_live || data?.media_type === 'live');
   if (data?.media_type === 'image') {
     renderSummary([
       { label: '当前状态', value: `解析成功，共找到 ${Number(data?.image_count || (data?.images || []).length || 0)} 张图片`, success: true, highlight: true },
@@ -161,29 +144,17 @@ function showParseSummary(data) {
     return;
   }
   const preferredIndex = getPreferredStreamIndex(data);
-  const preferredOption = preferredIndex !== null ? ((data?.stream_options || [])[preferredIndex] || {}) : {};
+  const preferredOption = preferredIndex !== null ? (data?.stream_options || [])[preferredIndex] || {} : {};
   const mediaCount = Number(data?.media_entries?.length || 0);
   const videoCount = Number(data?.stream_count || 0);
-  const isUaaLive = data?.platform === 'uaa';
   const multiVideoPost = isXUrl(data?.source_url) && mediaCount > 1;
-  const isSingleHighest = !multiVideoPost && (isUaaLive || shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
-  if (isLive) {
-    const hasLiveStream = Boolean((data?.streams || []).length && (data?.resolved_url || preferredOption?.url));
-    renderSummary([
-      { label: '当前状态', value: hasLiveStream ? '解析成功，已识别为直播源' : '已识别为直播房间，但当前没拿到可录制直播流', success: true, highlight: true },
-      { label: '标题', value: data?.title || '未抓到标题' },
-      { label: '默认录制文件名', value: $('output').value.trim() || '未生成' },
-      { label: '当前直播源', value: hasLiveStream ? streamMetaText(preferredOption) : '暂无可录制直播流' },
-      { label: '下一步', value: hasLiveStream ? '这是直播录制入口，点“开始录制直播”，不要走普通下载。' : '先等主播开播或确认房间当前是否有 HLS/FLV 直播流。' },
-    ], { variant: 'success' });
-    return;
-  }
+  const isSingleHighest = !multiVideoPost && (shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
   renderSummary([
     { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`), success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
     { label: '默认文件名', value: $('output').value.trim() || '未生成' },
     { label: multiVideoPost ? '当前选中' : (isSingleHighest ? '当前画质' : '推荐画质'), value: multiVideoPost ? `视频 ${Number((preferredIndex ?? 0) + 1)}` : streamMetaText(preferredOption) },
-    { label: '下一步', value: multiVideoPost ? '这是多视频帖子，点上方列表选第几个视频，再预览或下载。' : (isSingleHighest ? '直接下载/录制就行。' : '点上方视频列表选一个，再预览或下载') },
+    { label: '下一步', value: multiVideoPost ? '这是多视频帖子，点上方列表选第几个视频，再预览或下载。' : (isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个，再预览或下载') },
   ], { variant: 'success' });
 }
 
@@ -210,7 +181,6 @@ function showConfigSummary(data) {
     { label: '默认代理', value: data?.default_proxy || '未设置' },
     { label: '自动重试', value: data?.auto_retry_enabled ? '已开启' : '未开启' },
     { label: '重试策略', value: `${data?.auto_retry_max_attempts ?? 2} 次 / ${data?.auto_retry_delay_seconds ?? 30}s` },
-    { label: '直播录制', value: `切片 ${Number(data?.record_segment_minutes ?? 30)} 分钟 / 重连 ${Number(data?.record_max_reconnect_attempts ?? 6)} 次 / 等待 ${Number(data?.record_restart_delay_seconds ?? 5)}s` },
     { label: '企业微信', value: data?.wecom_ready ? '配置已就绪' : (data?.wecom_enabled ? '已开启，但参数还没填完整' : '未启用') },
   ]);
 }
@@ -290,21 +260,6 @@ function applyConfigToForm(data = {}) {
   $('cfg_auto_retry_max_attempts').value = Number(data?.auto_retry_max_attempts ?? 2);
   if ($('cfg_xck')) {
     $('cfg_xck').value = data?.xck || data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
-  }
-  if ($('cfg_record_segment_minutes')) {
-    $('cfg_record_segment_minutes').value = Number(data?.record_segment_minutes ?? 30);
-  }
-  if ($('cfg_record_max_reconnect_attempts')) {
-    $('cfg_record_max_reconnect_attempts').value = Number(data?.record_max_reconnect_attempts ?? 6);
-  }
-  if ($('cfg_record_restart_delay_seconds')) {
-    $('cfg_record_restart_delay_seconds').value = Number(data?.record_restart_delay_seconds ?? 5);
-  }
-  if ($('live_segment_minutes')) {
-    $('live_segment_minutes').value = Number(data?.record_segment_minutes ?? 30);
-  }
-  if ($('live_max_reconnect_attempts')) {
-    $('live_max_reconnect_attempts').value = Number(data?.record_max_reconnect_attempts ?? 6);
   }
   if ($('cfg_youtubeck')) {
     $('cfg_youtubeck').value = data?.youtubeck || data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
@@ -496,10 +451,6 @@ function collapseStreamsForDisplay(data) {
 function renderStreamList(data) {
   const options = data?.stream_options || [];
   const streams = data?.streams || [];
-  const isLive = Boolean(data?.is_live || data?.media_type === 'live');
-  if (dom.streamPanelTitle) {
-    dom.streamPanelTitle.textContent = isLive ? '直播流' : '视频列表';
-  }
   if (data?.media_type === 'image') {
     dom.streamPanel.classList.remove('hidden');
     dom.streamCountTag.textContent = `${Number(data?.image_count || (data?.images || []).length || 0)} images`;
@@ -514,15 +465,15 @@ function renderStreamList(data) {
   }
 
   dom.streamPanel.classList.remove('hidden');
-  dom.streamCountTag.textContent = `${streams.length} ${isLive ? 'live streams' : 'streams'}`;
+  dom.streamCountTag.textContent = `${streams.length} streams`;
   dom.streamList.innerHTML = streams.map((stream, index) => {
     const option = options.find(item => item.url === stream) || { url: stream };
     const active = stream === state.selectedStreamUrl || index === state.selectedStreamIndex;
     return `
       <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}">
         <div class="stream-item-title">
-          <span>${isLive ? '直播源' : (shouldCollapseToBestOnly(data?.source_url, data) || data?.platform === 'uaa' ? '最高画质' : `视频 ${index + 1}`)}</span>
-          <span>${active ? '当前选中' : (isLive ? '点击预览直播流' : '点击预览')}</span>
+          <span>${shouldCollapseToBestOnly(data?.source_url, data) ? '最高画质' : `视频 ${index + 1}`}</span>
+          <span>${active ? '当前选中' : '点击预览'}</span>
         </div>
         <div class="stream-item-meta">${streamMetaText(option)}</div>
         <div class="stream-item-url">${stream}</div>
@@ -634,13 +585,10 @@ async function parseUrl() {
     applyParseData(data);
     const shownCount = state.latestParseData?.stream_count ?? data.stream_count;
     const shownMediaCount = Number(state.latestParseData?.media_entries?.length || 0);
-    const isLive = Boolean(state.latestParseData?.is_live || state.latestParseData?.media_type === 'live');
     if (isXUrl(payload.url) && shownMediaCount > 1) {
       setStatus(`解析完成 · 显示 ${shownMediaCount} 个视频媒体`, 'success');
-    } else if (isLive) {
-      setStatus('解析完成 · 已识别为直播源', 'success');
     } else {
-      setStatus(shownCount <= 1 ? '解析完成 · 仅显示最高画质' : `解析完成 · 显示 ${shownCount} 个可用视频`, 'success');
+      setStatus(shownCount > 1 ? `解析完成 · 显示 ${shownCount} 个可用视频` : '解析完成 · 仅显示最高画质', 'success');
     }
   } catch (e) {
     resetPlayer();
@@ -675,10 +623,6 @@ async function downloadVideo() {
     const payload = collect();
     if (!payload.url) throw new Error('链接都没填，下载个锤子。');
     const isImageMode = state.latestParseData?.media_type === 'image';
-    const isLiveMode = Boolean(state.latestParseData?.is_live || state.latestParseData?.media_type === 'live');
-    if (isLiveMode) {
-      throw new Error('这是直播源，请点“开始录制直播”，不要走普通下载。');
-    }
     if (!isImageMode && (state.selectedStreamIndex === null || !state.selectedStreamUrl)) {
       throw new Error('先解析出可用视频，再下载。');
     }
@@ -710,9 +654,6 @@ async function saveConfig() {
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
       auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),
       auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),
-      record_segment_minutes: Number($('cfg_record_segment_minutes')?.value || 0),
-      record_max_reconnect_attempts: Number($('cfg_record_max_reconnect_attempts')?.value || 0),
-      record_restart_delay_seconds: Number($('cfg_record_restart_delay_seconds')?.value || 5),
       xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
       bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
@@ -834,50 +775,6 @@ async function uploadBilibiliCookies() {
   }
 }
 
-async function startLiveRecord() {
-  try {
-    const payload = collectLiveRecordPayload();
-    if (!payload.url) throw new Error('先贴链接。');
-    if (!payload.stream_url) throw new Error('先解析出直播流，再开始录制。');
-    setStatus('创建录制任务…', 'loading');
-    const data = await api('/api/live-record', payload, 45000);
-    renderSummary([
-      { label: '当前状态', value: data?.status_text || '录制任务已创建' },
-      { label: '任务编号', value: data?.id || '未知' },
-      { label: '输出文件', value: data?.output || '未知文件' },
-      { label: '录制策略', value: `切片 ${Number(data?.segment_minutes || 0)} 分钟 / 重连 ${Number(data?.max_reconnect_attempts || 0)} 次` },
-    ]);
-    await refreshJobs();
-    setStatus('录制任务已创建', 'success');
-  } catch (e) {
-    showError('live-record', e);
-    setStatus(`录制失败：${e.message}`, 'error');
-  }
-}
-
-async function stopJob(jobId) {
-  if (!jobId) return;
-  try {
-    setStatus('停止任务…', 'loading');
-    const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/stop`, {}, 20000);
-    await refreshJobs();
-    setStatus(data?.stopping ? '已请求停止任务' : '任务已停止', 'success');
-  } catch (e) {
-    setStatus(`停止失败：${e.message}`, 'error');
-  }
-}
-
-async function showJobLog(jobId) {
-  if (!jobId) return;
-  try {
-    const data = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/log?lines=80`, { cache: 'no-store' }).then(r => r.json());
-    const content = String(data?.log || '').trim() || '暂无日志';
-    window.alert(content);
-  } catch (e) {
-    setStatus(`查看日志失败：${e.message}`, 'error');
-  }
-}
-
 async function retryJob(jobId) {
   if (!jobId) return;
   try {
@@ -975,10 +872,10 @@ function setHistoryFilter(filter) {
 function jobStatusText(job) {
   const statusMap = {
     queued: '排队中',
-    downloading: job?.job_type === 'live_record' ? '录制中' : '下载中',
-    done: job?.job_type === 'live_record' ? '录制完成' : '已完成',
-    failed: job?.job_type === 'live_record' ? '录制失败' : '失败',
-    cancelled: job?.job_type === 'live_record' ? '已停止' : '已取消',
+    downloading: '下载中',
+    done: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
     retried: '已重试',
   };
   return statusMap[job?.status] || '未知状态';
@@ -988,10 +885,6 @@ function humanizeJobMeta(job) {
   const raw = String(job?.status_text || '').trim();
   if (!raw) return '';
   return raw
-    .replace(/^开始录制直播…\s*/g, '开始录制直播 · ')
-    .replace(/^录制中\s*·\s*/g, '录制中 · ')
-    .replace(/^录制断开，/g, '录制断开，')
-    .replace(/^已请求停止录制，等待 ffmpeg 退出…/g, '已请求停止录制，等待 ffmpeg 退出…')
     .replace(/^正在下载…\s*/g, '')
     .replace(/^激进模式下载中…\s*/g, '正在并发抓分片 · ')
     .replace(/^开始抓取视频（带 cookies）\s*·\s*/g, '开始抓取视频（带登录态） · ')
@@ -1091,14 +984,10 @@ function buildJobCard(job, { compact = false } = {}) {
   const metaText = truncateText(humanizeJobMeta(job), compact ? 92 : 160);
   const retryMeta = Number(job?.retry_count || 0) > 0 ? ` · 第 ${Number(job.retry_count)} 次重试` : '';
   const errorText = job?.error ? truncateText(job.error, compact ? 120 : 240) : '';
-  const actionLabel = status === 'downloading' ? (job?.job_type === 'live_record' ? '停止' : '取消') : '删除';
+  const actionLabel = status === 'downloading' ? '取消' : '删除';
   const retryButton = status === 'failed'
     ? `<button class="btn btn-inline btn-secondary-lite" onclick="retryJob('${escapeHtml(job.id || '')}')">重试</button>`
     : '';
-  const logButton = `<button class="btn btn-inline btn-secondary-lite" onclick="showJobLog('${escapeHtml(job.id || '')}')">日志</button>`;
-  const stopOrDeleteAction = status === 'downloading'
-    ? `<button class="btn btn-inline btn-danger" onclick="stopJob('${escapeHtml(job.id || '')}')">${actionLabel}</button>`
-    : `<button class="btn btn-inline btn-danger" onclick="deleteJob('${escapeHtml(job.id || '')}')">${actionLabel}</button>`;
 
   return `
     <article class="job ${compact ? 'job-compact' : ''} job-status-${escapeHtml(status)}">
@@ -1118,8 +1007,7 @@ function buildJobCard(job, { compact = false } = {}) {
       ${errorText ? `<div class="job-error" title="${escapeHtml(job.error)}">${escapeHtml(errorText)}</div>` : ''}
       <div class="job-actions">
         ${retryButton}
-        ${logButton}
-        ${stopOrDeleteAction}
+        <button class="btn btn-inline btn-danger" onclick="deleteJob('${escapeHtml(job.id || '')}')">${actionLabel}</button>
       </div>
     </article>
   `;
@@ -1307,16 +1195,11 @@ function bindEvents() {
 
 window.parseUrl = parseUrl;
 window.downloadVideo = downloadVideo;
-window.startLiveRecord = startLiveRecord;
-window.stopJob = stopJob;
-window.showJobLog = showJobLog;
 window.retryJob = retryJob;
 window.deleteJob = deleteJob;
 window.clearHistory = clearHistory;
 window.saveConfig = saveConfig;
 window.uploadTwitterCookies = uploadTwitterCookies;
-window.uploadYouTubeCookies = uploadYouTubeCookies;
-window.uploadBilibiliCookies = uploadBilibiliCookies;
 window.toggleSettingsPanel = toggleSettingsPanel;
 window.toggleHistoryPanel = toggleHistoryPanel;
 

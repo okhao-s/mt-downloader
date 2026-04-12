@@ -1,7 +1,6 @@
 import asyncio
 import os
 import re
-import subprocess
 import threading
 import time
 import warnings
@@ -31,7 +30,6 @@ from core import (
     ffmpeg_download,
     is_direct_media_url,
     is_m3u8_url,
-    is_uaa_live_room_url,
     load_config,
     normalize_filename,
     rewrite_m3u8_manifest,
@@ -76,335 +74,6 @@ WECOM_STATUS_MAX_LEN = 120
 WECOM_ERROR_MAX_LEN = 180
 WECOM_URL_MAX_LEN = 96
 WECOM_MESSAGE_MAX_LEN = 420
-
-
-LOGS_DIR = DATA_DIR / "logs"
-LIVE_LOGS_DIR = LOGS_DIR / "live"
-LIVE_RECORD_DEFAULT_SEGMENT_MINUTES = max(0, int(os.getenv("LIVE_RECORD_SEGMENT_MINUTES", "30") or 0))
-LIVE_RECORD_DEFAULT_MAX_RECONNECTS = max(0, int(os.getenv("LIVE_RECORD_MAX_RECONNECTS", "6") or 0))
-LIVE_RECORD_DEFAULT_RESTART_DELAY = max(1, int(os.getenv("LIVE_RECORD_RESTART_DELAY_SECONDS", "5") or 1))
-LIVE_LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def resolve_recording_extension(stream_url: str | None, segmented: bool = False) -> str:
-    value = str(stream_url or "").lower()
-    if segmented:
-        return ".mp4"
-    if ".flv" in value:
-        return ".flv"
-    if ".ts" in value:
-        return ".ts"
-    return ".mp4"
-
-
-def get_job_log_path(job_id: str, job_type: str = "download") -> Path:
-    if job_type == "live_record":
-        return LIVE_LOGS_DIR / f"{job_id}.log"
-    return LOGS_DIR / f"{job_id}.log"
-
-
-def append_job_log(job_id: str, message: str, *, job_type: str = "download") -> None:
-    line = clean_wecom_text(message) or str(message or "").strip()
-    if not line:
-        return
-    log_path = get_job_log_path(job_id, job_type=job_type)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    with log_path.open("a", encoding="utf-8") as fh:
-        fh.write(f"[{timestamp}] {line}\n")
-
-
-def read_job_log_tail(job_id: str, *, job_type: str = "download", max_lines: int = 40) -> str:
-    log_path = get_job_log_path(job_id, job_type=job_type)
-    if not log_path.exists():
-        return ""
-    try:
-        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except Exception:
-        return ""
-    return "\n".join(lines[-max_lines:])
-
-
-def ensure_job_log_metadata(job: dict) -> dict:
-    job_type = str(job.get("job_type") or "download")
-    job["log_path"] = str(get_job_log_path(str(job.get("id") or ""), job_type=job_type))
-    job["log_tail"] = read_job_log_tail(str(job.get("id") or ""), job_type=job_type)
-    return job
-
-
-def build_live_segment_pattern(base_name: str, ext: str = ".mp4") -> str:
-    return normalize_filename(f"{base_name}_%Y%m%d-%H%M%S{ext}")
-
-
-def create_live_ffmpeg_command(
-    stream_url: str,
-    output_path: Path,
-    *,
-    referer: str | None = None,
-    user_agent: str | None = None,
-    proxy: str | None = None,
-    segment_minutes: int = 0,
-):
-    header_lines = []
-    if user_agent:
-        header_lines.append(f"User-Agent: {user_agent}")
-    if referer:
-        header_lines.append(f"Referer: {referer}")
-
-    parsed_stream = urlparse(stream_url)
-    stream_scheme = (parsed_stream.scheme or "").lower()
-    is_http_input = stream_scheme in {"http", "https"}
-
-    cmd = ["ffmpeg", "-y", "-nostdin", "-loglevel", "info"]
-    if proxy:
-        cmd += ["-http_proxy", proxy]
-    if header_lines:
-        cmd += ["-headers", "\r\n".join(header_lines) + "\r\n"]
-    if is_http_input:
-        cmd += [
-            "-rw_timeout", "15000000",
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_on_network_error", "1",
-            "-reconnect_at_eof", "1",
-            "-reconnect_delay_max", "5",
-        ]
-    cmd += [
-        "-i", stream_url,
-        "-map", "0",
-        "-dn",
-        "-c", "copy",
-    ]
-    if segment_minutes and segment_minutes > 0:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd += [
-            "-f", "segment",
-            "-segment_time", str(segment_minutes * 60),
-            "-reset_timestamps", "1",
-            "-strftime", "1",
-            "-segment_format", "mp4",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
-    else:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd += ["-movflags", "+faststart", str(output_path)]
-    return cmd
-
-
-def run_live_record_job(
-    job_id: str,
-    stream_url: str,
-    output_path: Path,
-    *,
-    referer: str | None = None,
-    user_agent: str | None = None,
-    proxy: str | None = None,
-    segment_minutes: int = 0,
-    max_reconnect_attempts: int = 0,
-    restart_delay_seconds: int = 5,
-):
-    with jobs_lock:
-        target_job = next((job for job in jobs if job.get("id") == job_id), None)
-        if not target_job:
-            return
-        if is_job_hidden(target_job) or target_job.get("cancel_requested"):
-            return
-
-    update_job(job_id, status="downloading", started_at=iso_now(), progress=8, status_text="开始录制直播…")
-    append_job_log(job_id, f"record start stream={stream_url}", job_type="live_record")
-    attempt = 0
-    while True:
-        with jobs_lock:
-            current_job = next((job for job in jobs if job.get("id") == job_id), None)
-            if not current_job:
-                return
-            if current_job.get("cancel_requested"):
-                break
-
-        attempt += 1
-        cmd = create_live_ffmpeg_command(
-            stream_url,
-            output_path,
-            referer=referer,
-            user_agent=user_agent,
-            proxy=proxy,
-            segment_minutes=segment_minutes,
-        )
-        append_job_log(job_id, f"ffmpeg attempt={attempt}: {' '.join(cmd)}", job_type="live_record")
-        update_job(
-            job_id,
-            status="downloading",
-            progress=min(95, 10 + attempt),
-            status_text=(f"录制中 · 第 {attempt} 次连接" + (f" · 每 {segment_minutes} 分钟切片" if segment_minutes > 0 else "")),
-            reconnect_attempt=attempt - 1,
-            ffmpeg_pid=None,
-        )
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        update_job(job_id, ffmpeg_pid=process.pid)
-        last_lines = []
-        try:
-            if process.stdout is not None:
-                for raw_line in process.stdout:
-                    line = raw_line.strip()
-                    if line:
-                        last_lines.append(line)
-                        append_job_log(job_id, line, job_type="live_record")
-                        if len(last_lines) > 50:
-                            last_lines = last_lines[-50:]
-                    with jobs_lock:
-                        current_job = next((job for job in jobs if job.get("id") == job_id), None)
-                        if not current_job:
-                            try:
-                                process.terminate()
-                            except Exception:
-                                pass
-                            return
-                        if current_job.get("cancel_requested"):
-                            process.terminate()
-                            break
-            return_code = process.wait()
-        finally:
-            update_job(job_id, ffmpeg_pid=None, log_tail="\n".join(last_lines[-20:]))
-
-        with jobs_lock:
-            current_job = next((job for job in jobs if job.get("id") == job_id), None)
-            if not current_job:
-                return
-            cancelled = bool(current_job.get("cancel_requested"))
-
-        if cancelled:
-            append_job_log(job_id, "record stop requested", job_type="live_record")
-            break
-
-        if return_code == 0:
-            append_job_log(job_id, "ffmpeg exited cleanly", job_type="live_record")
-            update_job(job_id, status="done", progress=100, status_text="直播录制完成", finished_at=iso_now(), reconnect_attempt=max(0, attempt - 1))
-            return
-
-        detail = "\n".join(last_lines[-20:]).strip() or f"ffmpeg exited with code {return_code}"
-        append_job_log(job_id, f"ffmpeg exit code={return_code}", job_type="live_record")
-        if attempt > max_reconnect_attempts:
-            update_job(job_id, status="failed", progress=100, status_text="直播录制失败", error=detail[-4000:], finished_at=iso_now(), reconnect_attempt=max(0, attempt - 1))
-            return
-
-        update_job(job_id, status="downloading", progress=min(95, 20 + attempt), status_text=f"录制断开，{restart_delay_seconds}s 后第 {attempt} 次重连…", reconnect_attempt=attempt)
-        time.sleep(max(1, restart_delay_seconds))
-
-    update_job(job_id, status="cancelled", progress=100, status_text="已停止录制", finished_at=iso_now(), reconnect_attempt=max(0, attempt - 1))
-
-
-def create_live_record_job(payload):
-    cfg = load_config()
-    source_url = str(payload.url or "").strip()
-    stream_url = str(payload.stream_url or source_url or "").strip()
-    default_referer = str(payload.referer or "").strip()
-    if not stream_url or not re.match(r"^https?://", stream_url, re.IGNORECASE):
-        raise HTTPException(status_code=400, detail="请提供直播流地址（http/https）")
-
-    requested_proxy = str(payload.proxy or "").strip()
-    proxy = resolve_request_proxy(stream_url, requested_proxy, cfg)
-    discovery = None
-    if (not payload.stream_url and not (is_m3u8_url(stream_url) or is_direct_media_url(stream_url))) or is_uaa_live_room_url(stream_url):
-        discovery = discover_stream(
-            stream_url,
-            referer=default_referer or None,
-            user_agent=payload.user_agent,
-            proxy=proxy,
-        )
-        resolved_stream_url = choose_stream_url(discovery)
-        if not resolved_stream_url:
-            detail = "未解析到可录制直播流"
-            errors = [str(item).strip() for item in (discovery.get("errors") or []) if str(item).strip()]
-            if errors:
-                detail = f"{detail}：{' | '.join(errors[:3])}"
-            raise HTTPException(status_code=400, detail=detail)
-        stream_url = resolved_stream_url
-        proxy = resolve_request_proxy(stream_url, requested_proxy, cfg)
-        if (discovery or {}).get("platform") == "uaa" and not default_referer:
-            default_referer = str((discovery or {}).get("source_url") or source_url or "").strip()
-    segment_minutes = max(0, int(payload.segment_minutes if payload.segment_minutes is not None else cfg.get("record_segment_minutes", LIVE_RECORD_DEFAULT_SEGMENT_MINUTES)))
-    max_reconnect_attempts = max(0, int(payload.max_reconnect_attempts if payload.max_reconnect_attempts is not None else cfg.get("record_max_reconnect_attempts", LIVE_RECORD_DEFAULT_MAX_RECONNECTS)))
-    restart_delay_seconds = max(1, int(payload.restart_delay_seconds if payload.restart_delay_seconds is not None else cfg.get("record_restart_delay_seconds", LIVE_RECORD_DEFAULT_RESTART_DELAY)))
-    output_dir = get_download_dir() / "live"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ext = resolve_recording_extension(stream_url, segmented=segment_minutes > 0)
-    base_name = (payload.output or f"live-{uuid4().hex[:8]}").strip()
-    output_name = allocate_output_name(normalize_filename(f"{base_name}{ext}"), download_dir=output_dir)
-    output_path = output_dir / output_name
-    segment_pattern = ""
-    if segment_minutes > 0:
-        segment_pattern = allocate_output_name(build_live_segment_pattern(base_name, ".mp4"), download_dir=output_dir)
-        output_path = output_dir / segment_pattern
-        output_name = segment_pattern
-
-    now = iso_now()
-    job = ensure_job_log_metadata({
-        "id": uuid4().hex[:10],
-        "job_type": "live_record",
-        "source_url": source_url or stream_url,
-        "stream_url": stream_url,
-        "stream_index": None,
-        "media_index": None,
-        "output": output_name,
-        "download_dir": str(output_dir),
-        "created_at": now,
-        "updated_at": now,
-        "started_at": None,
-        "finished_at": None,
-        "proxy": proxy or "",
-        "status": "queued",
-        "status_text": "排队中 · 等待开始录制",
-        "progress": 0,
-        "title": payload.output or (discovery or {}).get("title") or "直播录制",
-        "platform": (discovery or {}).get("platform") or detect_platform(source_url or stream_url) or "generic",
-        "media_type": "live",
-        "image_urls": [],
-        "image_count": 0,
-        "saved_files": [],
-        "output_base": Path(base_name).stem,
-        "error": "",
-        "retry_count": 0,
-        "retry_of": "",
-        "retry_scheduled": False,
-        "deleted": False,
-        "deleted_at": None,
-        "download_via": "ffmpeg-live",
-        "extractor": (discovery or {}).get("extractor") or "live-stream-url",
-        "request_payload": payload.model_dump(),
-        "wecom_to_user": "",
-        "wecom_started_notified": False,
-        "wecom_started_notified_at": None,
-        "wecom_started_notifying": False,
-        "wecom_done_notified": False,
-        "wecom_done_notified_at": None,
-        "wecom_done_notifying": False,
-        "wecom_failed_notified": False,
-        "wecom_failed_notified_at": None,
-        "wecom_failed_notifying": False,
-        "cancel_requested": False,
-        "segment_minutes": segment_minutes,
-        "max_reconnect_attempts": max_reconnect_attempts,
-        "restart_delay_seconds": restart_delay_seconds,
-        "reconnect_attempt": 0,
-        "ffmpeg_pid": None,
-        "is_live": True,
-    })
-    add_job(job)
-    append_job_log(job["id"], f"job created output={output_name}", job_type="live_record")
-    download_executor.submit(
-        run_live_record_job,
-        job["id"],
-        stream_url,
-        output_path,
-        referer=default_referer or None,
-        user_agent=payload.user_agent,
-        proxy=proxy,
-        segment_minutes=segment_minutes,
-        max_reconnect_attempts=max_reconnect_attempts,
-        restart_delay_seconds=restart_delay_seconds,
-    )
-    return job
 
 
 def clean_wecom_text(value: str | None) -> str:
@@ -707,9 +376,6 @@ def enrich_config_view(cfg: dict) -> dict:
     cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
     cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
     cfg["wecom_forward_token_masked"] = mask_secret(cfg.get("wecom_forward_token"))
-    cfg["record_segment_minutes"] = max(0, int(cfg.get("record_segment_minutes", LIVE_RECORD_DEFAULT_SEGMENT_MINUTES) or 0))
-    cfg["record_max_reconnect_attempts"] = max(0, int(cfg.get("record_max_reconnect_attempts", LIVE_RECORD_DEFAULT_MAX_RECONNECTS) or 0))
-    cfg["record_restart_delay_seconds"] = max(1, int(cfg.get("record_restart_delay_seconds", LIVE_RECORD_DEFAULT_RESTART_DELAY) or 1))
     return cfg
 
 
@@ -898,7 +564,6 @@ def iso_now() -> str:
 
 
 def add_job(job: dict):
-    ensure_job_log_metadata(job)
     with jobs_lock:
         jobs.append(job)
 
@@ -915,7 +580,6 @@ def update_job(job_id: str, **updates):
                 previous_status = str(job.get("status") or "").strip().lower()
                 updates.setdefault("updated_at", iso_now())
                 job.update(updates)
-                ensure_job_log_metadata(job)
                 current_status = str(job.get("status") or "").strip().lower()
                 if current_status != previous_status and job.get("wecom_to_user"):
                     if current_status == "downloading" and not job.get("wecom_started_notified"):
@@ -924,7 +588,7 @@ def update_job(job_id: str, **updates):
                         notify_jobs.append(("done", job.copy()))
                     elif current_status == "failed" and not job.get("wecom_failed_notified"):
                         notify_jobs.append(("failed", job.copy()))
-                result = job.copy()
+                result = job
                 break
         else:
             return None
@@ -935,12 +599,7 @@ def update_job(job_id: str, **updates):
 
 def list_recent_jobs(limit: int = 50):
     with jobs_lock:
-        visible_jobs = []
-        for job in jobs:
-            if is_job_hidden(job):
-                continue
-            ensure_job_log_metadata(job)
-            visible_jobs.append(job.copy())
+        visible_jobs = [job for job in jobs if not is_job_hidden(job)]
         return list(reversed(visible_jobs[-limit:]))
 
 
@@ -978,8 +637,6 @@ def get_download_subdir(url: str | None = None, media_type: str | None = None) -
     base_dir = get_download_dir()
     if media_type == "image":
         target = base_dir / "image"
-    elif media_type == "live":
-        target = base_dir / "live"
     elif is_youtube_url(url):
         target = base_dir / "youtube"
     elif is_bilibili_url(url):
@@ -1187,18 +844,6 @@ class DownloadPayload(ParsePayload):
     wecom_to_user: str | None = None
 
 
-class LiveRecordPayload(BaseModel):
-    url: str
-    stream_url: str | None = None
-    output: str | None = None
-    referer: str | None = None
-    user_agent: str | None = None
-    proxy: str | None = None
-    segment_minutes: int | None = None
-    max_reconnect_attempts: int | None = None
-    restart_delay_seconds: int | None = None
-
-
 class BatchDownloadPayload(ParsePayload):
     output: str | None = None
     download_all_streams: bool = True
@@ -1209,9 +854,6 @@ class ConfigPayload(BaseModel):
     auto_retry_enabled: bool = False
     auto_retry_delay_seconds: int = 30
     auto_retry_max_attempts: int = 2
-    record_segment_minutes: int = LIVE_RECORD_DEFAULT_SEGMENT_MINUTES
-    record_max_reconnect_attempts: int = LIVE_RECORD_DEFAULT_MAX_RECONNECTS
-    record_restart_delay_seconds: int = LIVE_RECORD_DEFAULT_RESTART_DELAY
     xck: str | None = str(TWITTER_COOKIES_PATH)
     youtubeck: str | None = str(YOUTUBE_COOKIES_PATH)
     bilibilick: str | None = str(BILIBILI_COOKIES_PATH)
@@ -1302,8 +944,7 @@ async def parse_url(payload: ParsePayload):
     )
     has_video = bool(info.get("resolved_url"))
     has_image = bool(info.get("images"))
-    is_live_semantic = bool(info.get("is_live") or info.get("media_type") == "live")
-    if not has_video and not has_image and not is_live_semantic:
+    if not has_video and not has_image:
         detail = "未解析到可下载媒体"
         if info.get("errors"):
             detail = "解析失败：\n" + "\n".join(info["errors"][-2:])
@@ -1325,16 +966,9 @@ async def parse_url(payload: ParsePayload):
     info["preview_url"] = "/api/preview.m3u8?" + "&".join(preview_parts) if chosen_stream else None
     info["stream_count"] = len(info.get("streams") or [])
     info["image_count"] = len(info.get("images") or [])
-    info["is_live"] = bool(info.get("is_live") or info.get("media_type") == "live")
-    if "live_record_supported" in info:
-        info["live_record_supported"] = bool(info.get("live_record_supported"))
-    else:
-        info["live_record_supported"] = info["is_live"]
     fallback_prefix = get_platform(input_url) or "video"
     if info.get("media_type") == "image":
         fallback_prefix = f"{fallback_prefix}-image"
-    elif info["is_live"]:
-        fallback_prefix = f"{fallback_prefix or 'live'}-live"
     info["suggested_output"] = build_suggested_output_name(info.get("title"), fallback_prefix=fallback_prefix)
     return info
 
@@ -1561,9 +1195,6 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             cookies_path,
         )
     media_type = str(info.get("media_type") or "video")
-    is_live = bool(info.get("is_live") or media_type == "live")
-    if is_live:
-        raise HTTPException(status_code=400, detail="这是直播源，请点“开始录制直播”，不要走普通视频下载")
     media_entries = info.get("media_entries") or []
     selected_media_entry = None
     if payload.media_index is not None and 0 <= payload.media_index < len(media_entries):
@@ -1614,7 +1245,6 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     now = iso_now()
     job = {
         "id": uuid4().hex[:10],
-        "job_type": "download",
         "source_url": input_url,
         "stream_url": stream_url,
         "stream_index": payload.stream_index,
@@ -1655,13 +1285,6 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         "wecom_failed_notified": False,
         "wecom_failed_notified_at": None,
         "wecom_failed_notifying": False,
-        "cancel_requested": False,
-        "segment_minutes": 0,
-        "max_reconnect_attempts": 0,
-        "restart_delay_seconds": 0,
-        "reconnect_attempt": 0,
-        "ffmpeg_pid": None,
-        "is_live": False,
     }
     add_job(job)
 
@@ -1809,13 +1432,6 @@ def delete_job(job_id: str):
             return {"ok": True, "job_id": job_id, "cancelling": True}
 
     job = remove_job(job_id)
-    if job and job.get("job_type") == "live_record":
-        try:
-            log_path = Path(str(job.get("log_path") or ""))
-            if log_path.exists():
-                log_path.unlink(missing_ok=True)
-        except Exception:
-            pass
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -1983,54 +1599,8 @@ def set_config(payload: ConfigPayload):
     if forward_token != CONFIG_KEEP_SENTINEL:
         cfg["wecom_forward_token"] = forward_token
 
-    cfg["record_segment_minutes"] = max(0, int(payload.record_segment_minutes or 0))
-    cfg["record_max_reconnect_attempts"] = max(0, int(payload.record_max_reconnect_attempts or 0))
-    cfg["record_restart_delay_seconds"] = max(1, int(payload.record_restart_delay_seconds or 1))
-
     save_config(cfg)
     return enrich_config_view(cfg)
-
-
-@app.post("/api/live-record")
-async def create_live_record(request: Request, payload: LiveRecordPayload):
-    return await run_in_executor(parse_executor, create_live_record_job, payload)
-
-
-@app.post("/api/jobs/{job_id}/stop")
-def stop_job(job_id: str):
-    with jobs_lock:
-        target = next((job for job in jobs if job.get("id") == job_id), None)
-        if not target or is_job_hidden(target):
-            raise HTTPException(status_code=404, detail="任务不存在")
-        target["cancel_requested"] = True
-        target["updated_at"] = iso_now()
-        ensure_job_log_metadata(target)
-        if target.get("job_type") == "live_record":
-            pid = target.get("ffmpeg_pid")
-            if pid:
-                try:
-                    os.kill(int(pid), 15)
-                except ProcessLookupError:
-                    pass
-                except Exception as exc:
-                    append_job_log(job_id, f"stop pid failed: {exc}", job_type="live_record")
-            target["status_text"] = "已请求停止录制，等待 ffmpeg 退出…"
-            return {"ok": True, "job_id": job_id, "stopping": True, "job_type": "live_record"}
-        if target.get("status") == "downloading":
-            target["status_text"] = "已请求取消，等待任务停止…"
-            return {"ok": True, "job_id": job_id, "stopping": True, "job_type": target.get("job_type") or "download"}
-
-    raise HTTPException(status_code=400, detail="当前任务不支持停止")
-
-
-@app.get("/api/jobs/{job_id}/log")
-def job_log(job_id: str, lines: int = 80):
-    snapshot = get_job_snapshot(job_id)
-    if not snapshot or is_job_hidden(snapshot):
-        raise HTTPException(status_code=404, detail="任务不存在")
-    job_type = str(snapshot.get("job_type") or "download")
-    max_lines = max(1, min(400, int(lines or 80)))
-    return {"ok": True, "job_id": job_id, "job_type": job_type, "log": read_job_log_tail(job_id, job_type=job_type, max_lines=max_lines)}
 
 
 @app.get("/api/wecom/callback")
