@@ -397,7 +397,7 @@ def create_live_record_job(payload):
         job["id"],
         stream_url,
         output_path,
-        referer=payload.referer,
+        referer=default_referer or None,
         user_agent=payload.user_agent,
         proxy=proxy,
         segment_minutes=segment_minutes,
