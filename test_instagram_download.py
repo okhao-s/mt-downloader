@@ -178,6 +178,8 @@ def test_home_template_includes_asset_version_and_instagram_upload_entry():
     assert 'uploadInstagramCookies()' in body
     assert 'instagram_cookies_file' in body
     assert '上传 Instagram 浏览器 cookies.txt' in body
+    assert body.index('xck（X / Twitter cookies 路径）') < body.index('instagramck（Instagram cookies 路径）') < body.index('youtubeck（YouTube cookies 路径）')
+    assert body.index('uploadTwitterCookies()') < body.index('uploadInstagramCookies()') < body.index('uploadYouTubeCookies()')
 
 
 if __name__ == "__main__":
