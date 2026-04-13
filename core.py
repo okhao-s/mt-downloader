@@ -15,6 +15,7 @@ import requests
 
 CONFIG_PATH = Path(os.getenv("APP_CONFIG_PATH", "/app/data/config.json"))
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+INSTAGRAM_FALLBACK_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 X_GQL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
 X_TWEET_RESULT_BY_REST_ID_QUERY = "sBoAB5nqJTOyR9sZ5qVLsw"
 DEFAULT_PROXY_BYPASS_PLATFORMS = {"douyin", "bilibili"}
@@ -144,6 +145,12 @@ def detect_platform(url: Optional[str]) -> str:
     if "bilibili.com/" in value or "b23.tv/" in value:
         return "bilibili"
     if any(token in value for token in [
+        "instagram.com/",
+        "instagr.am/",
+        "cdninstagram.com/",
+    ]):
+        return "instagram"
+    if any(token in value for token in [
         "douyin.com/",
         "iesdouyin.com/",
         "v.douyin.com/",
@@ -161,7 +168,7 @@ def detect_platform(url: Optional[str]) -> str:
 
 
 def prefers_best_stream(url: Optional[str]) -> bool:
-    return detect_platform(url) in {"x", "youtube", "bilibili", "douyin"}
+    return detect_platform(url) in {"x", "youtube", "bilibili", "douyin", "instagram"}
 
 
 def dedupe_keep_order(items: list[str]) -> list[str]:
@@ -995,6 +1002,105 @@ def extract_generic_ytdlp_streams(meta: dict) -> tuple[list[str], list[dict]]:
     return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
+def is_instagram_image_candidate(url: str | None) -> bool:
+    value = str(url or '').lower()
+    if not value:
+        return False
+    return any(token in value for token in ('cdninstagram.com/', 'instagram.f', 'scontent-')) and any(ext in value for ext in ('.jpg', '.jpeg', '.png', '.webp'))
+
+
+def normalize_instagram_media_url(url: str | None) -> Optional[str]:
+    value = str(url or '').replace('\\/', '/').strip()
+    return value or None
+
+
+def extract_instagram_images(meta: dict) -> tuple[list[str], list[dict], list[dict]]:
+    images: list[str] = []
+    options: list[dict] = []
+    media_entries: list[dict] = []
+
+    def push(image_url: str | None, width=None, height=None, source: str = 'yt-dlp-instagram-image'):
+        normalized = normalize_instagram_media_url(image_url)
+        if not is_instagram_image_candidate(normalized) or normalized in images:
+            return
+        images.append(normalized)
+        option = {'url': normalized, 'source': source, 'type': 'image', 'width': width, 'height': height}
+        options.append(option)
+        media_entries.append({
+            'media_index': len(media_entries),
+            'entry_index': len(media_entries),
+            'media_key': None,
+            'thumbnail': normalized,
+            'media_type': 'image',
+            'streams': [],
+            'stream_options': [],
+            'best_stream_url': None,
+            'best_stream_option': None,
+            'images': [normalized],
+            'image_options': [option],
+        })
+
+    thumbnails = meta.get('thumbnails') or []
+    if isinstance(thumbnails, list):
+        for item in thumbnails:
+            if isinstance(item, dict):
+                push(item.get('url'), item.get('width'), item.get('height'), source='yt-dlp-instagram-thumbnail')
+    push(meta.get('thumbnail'), source='yt-dlp-instagram-thumbnail')
+    return dedupe_keep_order(images), dedupe_stream_options(options), media_entries
+
+
+def extract_instagram_images_from_html(html: str) -> dict:
+    result = {
+        'title': extract_title_from_html(html),
+        'thumbnail': None,
+        'streams': [],
+        'stream_options': [],
+        'images': [],
+        'image_options': [],
+        'media_entries': [],
+    }
+
+    def push(image_url: str | None, source: str = 'instagram-meta-image'):
+        normalized = normalize_instagram_media_url(image_url)
+        if not is_instagram_image_candidate(normalized) or normalized in result['images']:
+            return
+        result['images'].append(normalized)
+        option = {'url': normalized, 'source': source, 'type': 'image'}
+        result['image_options'].append(option)
+        result['thumbnail'] = result['thumbnail'] or normalized
+        result['media_entries'].append({
+            'media_index': len(result['media_entries']),
+            'entry_index': len(result['media_entries']),
+            'media_key': None,
+            'thumbnail': normalized,
+            'media_type': 'image',
+            'streams': [],
+            'stream_options': [],
+            'best_stream_url': None,
+            'best_stream_option': None,
+            'images': [normalized],
+            'image_options': [option],
+        })
+
+    for tag in re.findall(r'<meta\b[^>]*>', html, re.IGNORECASE):
+        attrs = {}
+        for key, _, value in re.findall(r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(['\"])(.*?)\2", tag, re.IGNORECASE | re.DOTALL):
+            attrs[key.lower()] = value
+        meta_key = (attrs.get('property') or attrs.get('name') or '').strip().lower()
+        if meta_key in {'og:image', 'twitter:image'}:
+            push(attrs.get('content'), source='instagram-meta-image')
+
+    if not result['images']:
+        for candidate in re.findall(r'https?:\\/\\/[^"\'\s<>]+', html, re.IGNORECASE):
+            push(candidate.replace('\\/', '/'), source='instagram-html-raw-image')
+        for candidate in re.findall(r'https?://[^"\'\s<>]+', html, re.IGNORECASE):
+            push(candidate, source='instagram-html-raw-image')
+
+    result['images'] = dedupe_keep_order(result['images'])
+    result['image_options'] = dedupe_stream_options(result['image_options'])
+    return result
+
+
 def extract_x_images(meta: dict) -> tuple[list[str], list[dict]]:
     images = []
     options = []
@@ -1132,6 +1238,9 @@ def extract_platform_streams(platform: str, meta: dict) -> tuple[list[str], list
             streams.append(direct)
             options.append(build_stream_option(direct, meta, source="yt-dlp-douyin-direct"))
         return dedupe_keep_order(streams), dedupe_stream_options(options), []
+    if platform == "instagram":
+        _, _, media_entries = extract_instagram_images(meta)
+        return [], [], media_entries
     streams, options = extract_generic_ytdlp_streams(meta)
     return streams, options, []
 
@@ -1323,7 +1432,14 @@ def _discover_stream_uncached(
         info["thumbnail"] = meta.get("thumbnail")
 
         extra_streams, extra_options, media_entries = extract_platform_streams(platform, meta)
-        extra_images, extra_image_options = extract_x_images(meta) if platform == "x" else ([], [])
+        if platform == "x":
+            extra_images, extra_image_options = extract_x_images(meta)
+        elif platform == "instagram":
+            extra_images, extra_image_options, media_entries_from_images = extract_instagram_images(meta)
+            if media_entries_from_images:
+                media_entries = media_entries_from_images
+        else:
+            extra_images, extra_image_options = [], []
         if media_entries:
             info["media_entries"] = media_entries
     else:
@@ -1345,6 +1461,23 @@ def _discover_stream_uncached(
         extra_image_options.extend(fallback_image_options)
         if fallback_extractor:
             info["extractor"] = fallback_extractor
+
+    if platform == "instagram" and not extra_streams and not extra_images:
+        try:
+            html = fetch_webpage_html(url, referer, user_agent or INSTAGRAM_FALLBACK_UA, proxy)
+            fallback = extract_instagram_images_from_html(html)
+            extra_images.extend(fallback.get('images') or [])
+            extra_image_options.extend(fallback.get('image_options') or [])
+            if fallback.get('media_entries'):
+                info['media_entries'] = fallback.get('media_entries') or []
+            if fallback.get('title') and not info.get('title'):
+                info['title'] = fallback.get('title')
+            if fallback.get('thumbnail') and not info.get('thumbnail'):
+                info['thumbnail'] = fallback.get('thumbnail')
+            if fallback.get('images'):
+                info['extractor'] = 'instagram-html'
+        except Exception as exc:
+            info['errors'].append(f'instagram-html fallback 失败：{exc}')
 
     if extra_streams:
         apply_stream_results(
