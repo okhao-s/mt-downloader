@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import subprocess
 import threading
 import time
 import warnings
@@ -41,7 +42,12 @@ from wecom import WeComClient, WeComCrypto, build_passive_text_reply
 app = FastAPI(title="M3U8 Downloader")
 BASE_DIR = Path(__file__).parent
 APP_VERSION = os.getenv("APP_VERSION", "dev").strip() or "dev"
-APP_COMMIT = os.getenv("APP_COMMIT", "unknown").strip() or "unknown"
+APP_COMMIT = os.getenv("APP_COMMIT", "").strip()
+if not APP_COMMIT:
+    try:
+        APP_COMMIT = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=str(BASE_DIR), text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        APP_COMMIT = "unknown"
 STATIC_ASSET_VERSION = f"{APP_VERSION}-{APP_COMMIT}".replace(" ", "-")
 DOWNLOAD_DIR = Path("/downloads")
 DATA_DIR = Path("/app/data")
