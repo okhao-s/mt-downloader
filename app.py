@@ -60,6 +60,16 @@ COOKIES_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+
+@app.middleware("http")
+async def add_no_store_for_shell(request: Request, call_next):
+    response = await call_next(request)
+    if request.method == "GET" and request.url.path == "/":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 jobs: list[dict] = []
 jobs_lock = threading.Lock()
 MAX_CONCURRENT_DOWNLOADS = 3

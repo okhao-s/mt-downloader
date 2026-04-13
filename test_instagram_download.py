@@ -175,11 +175,50 @@ def test_home_template_includes_asset_version_and_instagram_upload_entry():
     body = response.body.decode('utf-8')
     assert f"/static/app.js?v={app.STATIC_ASSET_VERSION}" in body
     assert f"/static/style.css?v={app.STATIC_ASSET_VERSION}" in body
+    assert '前端版本' in body
+    assert app.APP_VERSION in body
     assert 'uploadInstagramCookies()' in body
     assert 'instagram_cookies_file' in body
-    assert '上传 Instagram 浏览器 cookies.txt' in body
-    assert body.index('xck（X / Twitter cookies 路径）') < body.index('instagramck（Instagram cookies 路径）') < body.index('youtubeck（YouTube cookies 路径）')
+    assert '上传 Instagram / IG 浏览器 cookies.txt' in body
+    assert '旧缓存' in body
+    assert body.index('xck（X / Twitter cookies 路径）') < body.index('instagramck（Instagram / IG cookies 路径）') < body.index('youtubeck（YouTube cookies 路径）')
     assert body.index('uploadTwitterCookies()') < body.index('uploadInstagramCookies()') < body.index('uploadYouTubeCookies()')
+
+
+def test_home_sets_no_store_cache_headers():
+    old_load_config = app.load_config
+    old_list_recent_jobs = app.list_recent_jobs
+    try:
+        app.load_config = lambda: {}
+        app.list_recent_jobs = lambda limit: []
+
+        async def run():
+            scope = {
+                'type': 'http',
+                'http_version': '1.1',
+                'method': 'GET',
+                'scheme': 'http',
+                'path': '/',
+                'raw_path': b'/',
+                'query_string': b'',
+                'root_path': '',
+                'headers': [],
+                'client': ('127.0.0.1', 12345),
+                'server': ('testserver', 80),
+                'state': {},
+                'app': app.app,
+            }
+            request = app.Request(scope)
+            return await app.add_no_store_for_shell(request, lambda req: app.home(req))
+
+        response = asyncio.run(run())
+    finally:
+        app.load_config = old_load_config
+        app.list_recent_jobs = old_list_recent_jobs
+
+    assert response.headers['Cache-Control'] == 'no-store, no-cache, must-revalidate, max-age=0'
+    assert response.headers['Pragma'] == 'no-cache'
+    assert response.headers['Expires'] == '0'
 
 
 if __name__ == "__main__":
@@ -193,4 +232,5 @@ if __name__ == "__main__":
     test_resolve_site_cookies_path_uses_instagram_cookie_config()
     test_should_use_site_cookies_supports_instagram()
     test_home_template_includes_asset_version_and_instagram_upload_entry()
+    test_home_sets_no_store_cache_headers()
     print("PASS: test_instagram_download")

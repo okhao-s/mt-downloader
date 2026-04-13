@@ -19,7 +19,10 @@
     <section class="workspace-main">
       <section class="panel glass workbench">
         <div class="topbar-actions">
-          <div class="topbar-title">MTHREE</div>
+          <div>
+            <div class="topbar-title">MTHREE</div>
+            <div class="topbar-meta">前端版本 {{ app_version }} · {{ app_commit[:7] }}{% if asset_version %} · 资源串 {{ asset_version }}{% endif %}</div>
+          </div>
           <div class="topbar-buttons">
             <button class="btn btn-inline" type="button" onclick="toggleSettingsPanel()">设置</button>
             <button class="btn btn-inline" type="button" onclick="toggleHistoryPanel()">历史记录</button>
@@ -167,12 +170,13 @@
           </label>
 
           <label class="field field-wide">
-            <span>instagramck（Instagram cookies 路径）</span>
+            <span>instagramck（Instagram / IG cookies 路径）</span>
             <input id="cfg_instagramck" value="{{ config.instagramck or config.instagram_cookies_path or '/app/data/cookies/instagram.cookies.txt' }}" placeholder="/app/data/cookies/instagram.cookies.txt">
+            <small class="field-hint">如果你现在看不到下面这行“上传 Instagram / IG cookies”，大概率是首页 HTML 还在走旧缓存，强刷或重开无痕页再看。</small>
           </label>
 
           <label class="field field-wide">
-            <span>上传 Instagram 浏览器 cookies.txt</span>
+            <span>上传 Instagram / IG 浏览器 cookies.txt</span>
             <input id="instagram_cookies_file" type="file" accept=".txt,text/plain">
             <small id="instagram-cookies-hint" class="field-hint">未上传 cookies，Instagram 先按游客模式试。遇到 empty media response / 登录要求时建议补 cookies。</small>
           </label>
@@ -255,7 +259,7 @@
         <div class="action-row">
           <button class="btn btn-secondary" onclick="saveConfig()">保存设置</button>
           <button class="btn btn-inline" type="button" onclick="uploadTwitterCookies()">上传 X / Twitter cookies</button>
-          <button class="btn btn-inline" type="button" onclick="uploadInstagramCookies()">上传 Instagram cookies</button>
+          <button class="btn btn-inline" type="button" onclick="uploadInstagramCookies()">上传 Instagram / IG cookies</button>
           <button class="btn btn-inline" type="button" onclick="uploadYouTubeCookies()">上传 YouTube cookies</button>
           <button class="btn btn-inline" type="button" onclick="uploadBilibiliCookies()">上传 Bilibili cookies</button>
         </div>
