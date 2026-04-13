@@ -643,6 +643,8 @@ def get_download_subdir(url: str | None = None, media_type: str | None = None) -
         target = base_dir / "bilibili"
     elif is_douyin_url(url):
         target = base_dir / "douyin"
+    elif is_instagram_url(url):
+        target = base_dir / "instagram"
     elif is_x_url(url):
         target = base_dir / "x"
     else:
@@ -794,7 +796,7 @@ def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, c
 def resolve_download_mode(platform: str, stream_url: str | None, media_type: str = "video") -> str:
     if media_type == "image":
         return "image"
-    if platform in {"youtube", "bilibili", "x"}:
+    if platform in {"youtube", "bilibili", "x", "instagram"}:
         return "ytdlp"
     if platform == "douyin":
         if stream_url and not is_m3u8_url(stream_url):
@@ -898,6 +900,10 @@ def is_bilibili_url(url: str | None) -> bool:
 
 def is_douyin_url(url: str | None) -> bool:
     return get_platform(url) == "douyin"
+
+
+def is_instagram_url(url: str | None) -> bool:
+    return get_platform(url) == "instagram"
 
 
 def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
@@ -1199,15 +1205,19 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     selected_media_entry = None
     if payload.media_index is not None and 0 <= payload.media_index < len(media_entries):
         selected_media_entry = media_entries[payload.media_index]
+        entry_media_type = str(selected_media_entry.get("media_type") or "").strip().lower()
+        if entry_media_type in {"image", "video"}:
+            media_type = entry_media_type
     download_dir = get_download_subdir(input_url, media_type=media_type)
     stream_url = payload.stream_url or choose_stream_url(selected_media_entry or info, payload.stream_url, payload.stream_index)
-    image_urls = info.get("images") or []
+    image_urls = (selected_media_entry.get("images") or []) if selected_media_entry and media_type == "image" else (info.get("images") or [])
     extractor = str(info.get("extractor") or "")
     platform = get_platform(input_url)
     x_url = platform == "x"
     youtube_url = platform == "youtube"
     bilibili_url = platform == "bilibili"
-    use_ytdlp_fallback = (not stream_url and x_url and media_type != "image") or youtube_url or bilibili_url or platform == "douyin"
+    instagram_url = platform == "instagram"
+    use_ytdlp_fallback = (not stream_url and x_url and media_type != "image") or youtube_url or bilibili_url or instagram_url or platform == "douyin"
     if media_type == "image":
         if not image_urls:
             raise HTTPException(status_code=404, detail="未解析到可下载图片")
@@ -1374,8 +1384,24 @@ async def download_all(request: Request, payload: BatchDownloadPayload):
     media_entries = info.get("media_entries") or []
     base_title = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
 
-    if platform == "x" and media_entries:
+    if platform in {"x", "instagram"} and media_entries:
         for media_index, media_entry in enumerate(media_entries):
+            media_type = str(media_entry.get("media_type") or "video")
+            if media_type == "image":
+                media_images = media_entry.get("images") or []
+                if not media_images:
+                    continue
+                job_payload = DownloadPayload(
+                    url=payload.url,
+                    output=base_title,
+                    referer=payload.referer,
+                    user_agent=payload.user_agent,
+                    proxy=payload.proxy,
+                    media_index=media_index,
+                )
+                jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
+                continue
+
             best_stream = media_entry.get("best_stream_url") or choose_stream_url(media_entry)
             if not best_stream:
                 continue
@@ -1393,7 +1419,7 @@ async def download_all(request: Request, payload: BatchDownloadPayload):
             )
             jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
         if not jobs_created:
-            raise HTTPException(status_code=404, detail="未解析到可下载视频")
+            raise HTTPException(status_code=404, detail="未解析到可下载媒体")
         return {"ok": True, "title": info.get("title") or base_title, "stream_count": len(jobs_created), "jobs": jobs_created}
 
     for index, stream in enumerate(streams):

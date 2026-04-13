@@ -144,6 +144,12 @@ def detect_platform(url: Optional[str]) -> str:
     if "bilibili.com/" in value or "b23.tv/" in value:
         return "bilibili"
     if any(token in value for token in [
+        "instagram.com/",
+        "instagr.am/",
+        "cdninstagram.com/",
+    ]):
+        return "instagram"
+    if any(token in value for token in [
         "douyin.com/",
         "iesdouyin.com/",
         "v.douyin.com/",
@@ -161,7 +167,7 @@ def detect_platform(url: Optional[str]) -> str:
 
 
 def prefers_best_stream(url: Optional[str]) -> bool:
-    return detect_platform(url) in {"x", "youtube", "bilibili", "douyin"}
+    return detect_platform(url) in {"x", "youtube", "bilibili", "douyin", "instagram"}
 
 
 def dedupe_keep_order(items: list[str]) -> list[str]:
@@ -977,6 +983,118 @@ def extract_douyin_streams(meta: dict) -> tuple[list[str], list[dict]]:
     return dedupe_keep_order(streams), dedupe_stream_options(options)
 
 
+def extract_instagram_media(meta: dict) -> tuple[list[str], list[dict], list[str], list[dict], list[dict]]:
+    streams = []
+    stream_options = []
+    images = []
+    image_options = []
+    media_entries = []
+
+    def collect_from_entry(entry: dict, media_index: int):
+        entry_streams = []
+        entry_stream_options = []
+        entry_images = []
+        entry_image_options = []
+
+        direct = entry.get('url')
+        if isinstance(direct, str) and ('.mp4' in direct or '.m3u8' in direct):
+            if not is_probably_audio_only_format(entry):
+                entry_streams.append(direct)
+                entry_stream_options.append(build_stream_option(direct, entry, source='yt-dlp-instagram-direct'))
+
+        for fmt in entry.get('formats', []) or []:
+            fmt_url = fmt.get('url')
+            if not isinstance(fmt_url, str):
+                continue
+            if '.mp4' not in fmt_url and '.m3u8' not in fmt_url:
+                continue
+            if is_probably_audio_only_format(fmt):
+                continue
+            entry_streams.append(fmt_url)
+            entry_stream_options.append(build_stream_option(fmt_url, fmt, source='yt-dlp-instagram'))
+
+        for thumb in entry.get('thumbnails', []) or []:
+            image_url = thumb.get('url')
+            if not isinstance(image_url, str) or not is_direct_image_url(image_url):
+                continue
+            entry_images.append(image_url)
+            entry_image_options.append({
+                'url': image_url,
+                'source': 'yt-dlp-instagram-thumbnail',
+                'type': 'image',
+                'width': thumb.get('width'),
+                'height': thumb.get('height'),
+                'preference': thumb.get('preference'),
+                'id': thumb.get('id'),
+            })
+
+        entry_streams = dedupe_keep_order(entry_streams)
+        entry_stream_options = dedupe_stream_options(entry_stream_options)
+        entry_images = dedupe_keep_order(entry_images)
+        entry_image_options = dedupe_stream_options(entry_image_options)
+
+        if entry_streams:
+            best_url = choose_best_stream_url({'streams': entry_streams, 'stream_options': entry_stream_options})
+            best_option = next((item for item in entry_stream_options if item.get('url') == best_url), entry_stream_options[0])
+            media_entries.append({
+                'media_index': len(media_entries),
+                'entry_index': media_index,
+                'media_key': entry.get('id') or entry.get('display_id') or entry.get('webpage_url'),
+                'thumbnail': entry.get('thumbnail') or (entry_images[0] if entry_images else None),
+                'media_type': 'video',
+                'streams': entry_streams,
+                'stream_options': entry_stream_options,
+                'best_stream_url': best_option.get('url'),
+                'best_stream_option': best_option,
+                'images': entry_images,
+                'image_options': entry_image_options,
+            })
+            streams.append(best_option.get('url'))
+            stream_options.append(best_option)
+            images.extend(entry_images)
+            image_options.extend(entry_image_options)
+            return
+
+        if entry_images:
+            media_entries.append({
+                'media_index': len(media_entries),
+                'entry_index': media_index,
+                'media_key': entry.get('id') or entry.get('display_id') or entry.get('webpage_url'),
+                'thumbnail': entry.get('thumbnail') or entry_images[0],
+                'media_type': 'image',
+                'streams': [],
+                'stream_options': [],
+                'best_stream_url': None,
+                'best_stream_option': None,
+                'images': entry_images,
+                'image_options': entry_image_options,
+            })
+            images.extend(entry_images)
+            image_options.extend(entry_image_options)
+
+    entries = meta.get('entries') or []
+    if isinstance(entries, list) and entries:
+        for media_index, entry in enumerate(entries):
+            if isinstance(entry, dict):
+                collect_from_entry(entry, media_index)
+        return (
+            dedupe_keep_order(streams),
+            dedupe_stream_options(stream_options),
+            dedupe_keep_order(images),
+            dedupe_stream_options(image_options),
+            media_entries,
+        )
+
+    collect_from_entry(meta, 0)
+    return (
+        dedupe_keep_order(streams),
+        dedupe_stream_options(stream_options),
+        dedupe_keep_order(images),
+        dedupe_stream_options(image_options),
+        media_entries,
+    )
+
+
 def extract_generic_ytdlp_streams(meta: dict) -> tuple[list[str], list[dict]]:
     streams = []
     options = []
@@ -1110,30 +1228,34 @@ def extract_x_streams(meta: dict) -> tuple[list[str], list[dict], list[dict]]:
     return streams, options, media_entries
 
 
-def extract_platform_streams(platform: str, meta: dict) -> tuple[list[str], list[dict], list[dict]]:
+def extract_platform_streams(platform: str, meta: dict) -> tuple[list[str], list[dict], list[dict], list[str], list[dict]]:
     direct = meta.get("url")
     if platform == "x":
-        return extract_x_streams(meta)
+        streams, options, media_entries = extract_x_streams(meta)
+        return streams, options, media_entries, [], []
     if platform == "youtube":
         streams, options = extract_youtube_streams(meta)
         if isinstance(direct, str) and direct and direct not in streams and ('.googlevideo.com/' in direct or '.m3u8' in direct):
             streams.append(direct)
             options.append(build_stream_option(direct, meta, source="yt-dlp-youtube-direct"))
-        return dedupe_keep_order(streams), dedupe_stream_options(options), []
+        return dedupe_keep_order(streams), dedupe_stream_options(options), [], [], []
     if platform == "bilibili":
         streams, options = extract_bilibili_streams(meta)
         if isinstance(direct, str) and direct and direct not in streams:
             streams.append(direct)
             options.append(build_stream_option(direct, meta, source="yt-dlp-bilibili-direct"))
-        return dedupe_keep_order(streams), dedupe_stream_options(options), []
+        return dedupe_keep_order(streams), dedupe_stream_options(options), [], [], []
     if platform == "douyin":
         streams, options = extract_douyin_streams(meta)
         if isinstance(direct, str) and direct and direct not in streams:
             streams.append(direct)
             options.append(build_stream_option(direct, meta, source="yt-dlp-douyin-direct"))
-        return dedupe_keep_order(streams), dedupe_stream_options(options), []
+        return dedupe_keep_order(streams), dedupe_stream_options(options), [], [], []
+    if platform == "instagram":
+        streams, options, images, image_options, media_entries = extract_instagram_media(meta)
+        return streams, options, media_entries, images, image_options
     streams, options = extract_generic_ytdlp_streams(meta)
-    return streams, options, []
+    return streams, options, [], [], []
 
 
 def extract_x_status_id(url: str) -> Optional[str]:
@@ -1322,8 +1444,8 @@ def _discover_stream_uncached(
         info["title"] = meta.get("title") or info.get("title")
         info["thumbnail"] = meta.get("thumbnail")
 
-        extra_streams, extra_options, media_entries = extract_platform_streams(platform, meta)
-        extra_images, extra_image_options = extract_x_images(meta) if platform == "x" else ([], [])
+        extra_streams, extra_options, media_entries, platform_images, platform_image_options = extract_platform_streams(platform, meta)
+        extra_images, extra_image_options = extract_x_images(meta) if platform == "x" else (platform_images, platform_image_options)
         if media_entries:
             info["media_entries"] = media_entries
     else:
