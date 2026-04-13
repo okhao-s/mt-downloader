@@ -161,6 +161,25 @@ def test_should_use_site_cookies_supports_instagram(tmp_path=None):
         assert app.should_use_site_cookies("https://www.instagram.com/reel/abc123/", str(cookie_path)) is True
 
 
+def test_home_template_includes_asset_version_and_instagram_upload_entry():
+    old_load_config = app.load_config
+    old_list_recent_jobs = app.list_recent_jobs
+    try:
+        app.load_config = lambda: {}
+        app.list_recent_jobs = lambda limit: []
+        response = asyncio.run(app.home(type('Req', (), {})()))
+    finally:
+        app.load_config = old_load_config
+        app.list_recent_jobs = old_list_recent_jobs
+
+    body = response.body.decode('utf-8')
+    assert f"/static/app.js?v={app.STATIC_ASSET_VERSION}" in body
+    assert f"/static/style.css?v={app.STATIC_ASSET_VERSION}" in body
+    assert 'uploadInstagramCookies()' in body
+    assert 'instagram_cookies_file' in body
+    assert '上传 Instagram 浏览器 cookies.txt' in body
+
+
 if __name__ == "__main__":
     test_detect_platform_recognizes_instagram()
     test_get_download_subdir_uses_image_dir_for_instagram_images()
@@ -171,4 +190,5 @@ if __name__ == "__main__":
     test_download_all_instagram_mixed_media_creates_jobs_per_entry()
     test_resolve_site_cookies_path_uses_instagram_cookie_config()
     test_should_use_site_cookies_supports_instagram()
+    test_home_template_includes_asset_version_and_instagram_upload_entry()
     print("PASS: test_instagram_download")

@@ -42,6 +42,7 @@ app = FastAPI(title="M3U8 Downloader")
 BASE_DIR = Path(__file__).parent
 APP_VERSION = os.getenv("APP_VERSION", "dev").strip() or "dev"
 APP_COMMIT = os.getenv("APP_COMMIT", "unknown").strip() or "unknown"
+STATIC_ASSET_VERSION = f"{APP_VERSION}-{APP_COMMIT}".replace(" ", "-")
 DOWNLOAD_DIR = Path("/downloads")
 DATA_DIR = Path("/app/data")
 COOKIES_DIR = DATA_DIR / "cookies"
@@ -886,7 +887,17 @@ class ConfigPayload(BaseModel):
 async def home(request: Request):
     cfg = load_config()
     recent = list_recent_jobs(20)
-    return templates.TemplateResponse(request, "index.html", {"config": cfg, "jobs": recent})
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "config": cfg,
+            "jobs": recent,
+            "asset_version": STATIC_ASSET_VERSION,
+            "app_version": APP_VERSION,
+            "app_commit": APP_COMMIT,
+        },
+    )
 
 
 def get_platform(url: str | None) -> str:
