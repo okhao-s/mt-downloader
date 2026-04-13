@@ -301,6 +301,67 @@ def test_extract_instagram_images_from_html_supports_items_mixed_shape():
     assert result['media_entries'][1]['media_type'] == 'video'
 
 
+def test_extract_instagram_media_collects_display_resources_and_video_cover_images():
+    meta = {
+        "entries": [
+            {
+                "id": "image-display-resource",
+                "display_resources": [
+                    {"src": "https://scontent.cdninstagram.com/v/t51.2885-15/small.jpg", "config_width": 320, "config_height": 320},
+                    {"src": "https://scontent.cdninstagram.com/v/t51.2885-15/large.jpg", "config_width": 1440, "config_height": 1440},
+                ],
+                "thumbnail": "https://scontent.cdninstagram.com/v/t51.2885-15/thumb.jpg",
+            },
+            {
+                "id": "video-with-thumb",
+                "formats": [
+                    {"url": "https://cdninstagram.com/v/720.mp4", "vcodec": "h264", "acodec": "aac", "width": 1280, "height": 720, "tbr": 1800},
+                ],
+                "display_url": "https://scontent.cdninstagram.com/v/t51.2885-15/video-cover.jpg",
+            },
+        ]
+    }
+    streams, options, images, image_options, media_entries = core.extract_instagram_media(meta)
+    assert streams == ["https://cdninstagram.com/v/720.mp4"]
+    assert 'https://scontent.cdninstagram.com/v/t51.2885-15/large.jpg' in images
+    assert 'https://scontent.cdninstagram.com/v/t51.2885-15/video-cover.jpg' in images
+    assert len(media_entries) == 2
+    assert media_entries[0]['media_type'] == 'image'
+    assert media_entries[1]['media_type'] == 'video'
+
+
+def test_extract_instagram_images_from_html_supports_next_data_sidecar_payload():
+    html = """
+    <html><head><script>
+    window.__NEXT_DATA__ = {
+      "props": {"pageProps": {"postPage": {
+        "xdt_api__v1__media__shortcode__web_info": {
+          "items": [
+            {
+              "id": "1",
+              "display_url": "https://scontent.cdninstagram.com/v/t51.2885-15/car-1.jpg",
+              "dimensions": {"width": 1080, "height": 1350}
+            },
+            {
+              "id": "2",
+              "media_type": 2,
+              "video_versions": [{"url": "https://scontent.cdninstagram.com/v/t50.2886-16/car-2.mp4", "width": 720, "height": 1280}],
+              "image_versions2": {"candidates": [{"url": "https://scontent.cdninstagram.com/v/t51.2885-15/car-2.jpg", "width": 720, "height": 1280}]}
+            }
+          ]
+        }
+      }}}
+    };
+    </script></head></html>
+    """
+    result = core.extract_instagram_images_from_html(html)
+    assert 'https://scontent.cdninstagram.com/v/t51.2885-15/car-1.jpg' in result['images']
+    assert 'https://scontent.cdninstagram.com/v/t50.2886-16/car-2.mp4' in result['streams']
+    assert len(result['media_entries']) == 2
+    assert result['media_entries'][0]['media_type'] == 'image'
+    assert result['media_entries'][1]['media_type'] == 'video'
+
+
 if __name__ == "__main__":
     test_detect_platform_recognizes_instagram()
     test_get_download_subdir_uses_image_dir_for_instagram_images()
@@ -315,4 +376,6 @@ if __name__ == "__main__":
     test_home_template_includes_asset_version_and_instagram_upload_entry()
     test_home_sets_no_store_cache_headers()
     test_extract_instagram_images_from_html_supports_items_mixed_shape()
+    test_extract_instagram_media_collects_display_resources_and_video_cover_images()
+    test_extract_instagram_images_from_html_supports_next_data_sidecar_payload()
     print("PASS: test_instagram_download")

@@ -463,6 +463,106 @@ def is_instagram_image_candidate(url: str) -> bool:
     ])
 
 
+def normalize_instagram_media_url(url: str | None) -> Optional[str]:
+    if not isinstance(url, str) or not url:
+        return None
+    return unescape(url.replace(r'\/', '/')).strip()
+
+
+def iter_instagram_candidate_images(entry: dict) -> list[tuple[str, Optional[int], Optional[int], int, str]]:
+    if not isinstance(entry, dict):
+        return []
+
+    candidates: list[tuple[str, Optional[int], Optional[int], int, str]] = []
+    seen: set[str] = set()
+
+    def push(candidate_url, candidate_width=None, candidate_height=None, rank=0, source: str = 'instagram-candidate'):
+        normalized = normalize_instagram_media_url(candidate_url)
+        if not is_instagram_image_candidate(normalized) or normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append((normalized, candidate_width, candidate_height, rank, source))
+
+    dimensions = entry.get('dimensions') or entry.get('original_dimensions') or {}
+    width = dimensions.get('width') if isinstance(dimensions, dict) else None
+    height = dimensions.get('height') if isinstance(dimensions, dict) else None
+
+    image_versions = entry.get('image_versions2') or {}
+    for idx, item in enumerate((image_versions.get('candidates') or []) if isinstance(image_versions, dict) else []):
+        if not isinstance(item, dict):
+            continue
+        push(item.get('url'), item.get('width') or width, item.get('height') or height, rank=700 + idx, source='instagram-image-versions2')
+
+    candidates_list = entry.get('candidates') or []
+    if isinstance(candidates_list, list):
+        for idx, item in enumerate(candidates_list):
+            if not isinstance(item, dict):
+                continue
+            push(item.get('url'), item.get('width') or width, item.get('height') or height, rank=680 + idx, source='instagram-candidates')
+
+    for idx, item in enumerate(entry.get('thumbnails', []) or []):
+        if not isinstance(item, dict):
+            continue
+        thumb_id = str(item.get('id') or '').lower()
+        preference = float(item.get('preference') or 0)
+        rank = 620 + idx
+        if 'orig' in thumb_id or 'original' in thumb_id:
+            rank += 40
+        rank += int(preference)
+        push(item.get('url'), item.get('width') or width, item.get('height') or height, rank=rank, source='instagram-thumbnails')
+
+    display_resources = entry.get('display_resources') or []
+    if isinstance(display_resources, list):
+        for idx, item in enumerate(display_resources):
+            if not isinstance(item, dict):
+                continue
+            push(item.get('src') or item.get('display_url'), item.get('config_width') or item.get('width') or width, item.get('config_height') or item.get('height') or height, rank=500 + idx, source='instagram-display-resources')
+
+    additional_candidates = [
+        ('display_url', 420),
+        ('thumbnail_src', 410),
+        ('thumbnail_url', 405),
+        ('thumbnail', 400),
+        ('image_url', 395),
+        ('display_src', 390),
+        ('src', 385),
+    ]
+    for key, rank in additional_candidates:
+        push(entry.get(key), width, height, rank=rank, source=f'instagram-{key}')
+
+    return candidates
+
+
+def choose_best_instagram_image(entry: dict) -> tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
+    candidates = iter_instagram_candidate_images(entry)
+    dimensions = entry.get('dimensions') or entry.get('original_dimensions') or {}
+    width = dimensions.get('width') if isinstance(dimensions, dict) else None
+    height = dimensions.get('height') if isinstance(dimensions, dict) else None
+    if not candidates:
+        return None, width, height, None
+    candidates.sort(key=lambda item: (((item[1] or 0) * (item[2] or 0)), item[3]), reverse=True)
+    best_url, best_width, best_height, _, best_source = candidates[0]
+    return best_url, best_width or width, best_height or height, best_source
+
+
+def iter_instagram_media_nodes(value):
+    if isinstance(value, dict):
+        looks_like_media = any(
+            key in value for key in (
+                'display_url', 'video_url', 'video_versions', 'image_versions2',
+                'edge_sidecar_to_children', 'carousel_media', 'items', 'thumbnails',
+                'thumbnail_src', 'thumbnail_url', 'thumbnail', '__typename', 'media_type'
+            )
+        )
+        if looks_like_media:
+            yield value
+        for item in value.values():
+            yield from iter_instagram_media_nodes(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from iter_instagram_media_nodes(item)
+
+
 def extract_instagram_title_from_node(node: dict) -> Optional[str]:
     if not isinstance(node, dict):
         return None
@@ -494,13 +594,8 @@ def extract_instagram_media_from_node(node: dict) -> dict:
         'media_entries': [],
     }
 
-    def normalize_url(url: str | None) -> Optional[str]:
-        if not isinstance(url, str) or not url:
-            return None
-        return unescape(url.replace('\/', '/')).strip()
-
     def add_image(url: str, width=None, height=None, source: str = 'instagram-html'):
-        normalized = normalize_url(url)
+        normalized = normalize_instagram_media_url(url)
         if not is_instagram_image_candidate(normalized):
             return
         result['images'].append(normalized)
@@ -515,7 +610,7 @@ def extract_instagram_media_from_node(node: dict) -> dict:
             result['thumbnail'] = normalized
 
     def add_video(url: str, width=None, height=None, source: str = 'instagram-html-video'):
-        normalized = normalize_url(url)
+        normalized = normalize_instagram_media_url(url)
         if not isinstance(normalized, str) or not normalized:
             return
         lowered = normalized.lower()
@@ -524,60 +619,22 @@ def extract_instagram_media_from_node(node: dict) -> dict:
         result['streams'].append(normalized)
         result['stream_options'].append(build_stream_option(normalized, {'width': width, 'height': height}, source=source))
 
-    def choose_best_image(entry: dict) -> tuple[Optional[str], Optional[int], Optional[int]]:
-        candidates: list[tuple[str, Optional[int], Optional[int], int]] = []
-
-        def push(candidate_url, candidate_width=None, candidate_height=None, rank=0):
-            normalized = normalize_url(candidate_url)
-            if not is_instagram_image_candidate(normalized):
-                return
-            candidates.append((normalized, candidate_width, candidate_height, rank))
-
-        dimensions = entry.get('dimensions') or {}
-        width = dimensions.get('width') if isinstance(dimensions, dict) else None
-        height = dimensions.get('height') if isinstance(dimensions, dict) else None
-
-        image_versions = entry.get('image_versions2') or {}
-        for idx, item in enumerate((image_versions.get('candidates') or []) if isinstance(image_versions, dict) else []):
-            if not isinstance(item, dict):
-                continue
-            push(item.get('url'), item.get('width') or width, item.get('height') or height, rank=500 + idx)
-
-        display_resources = entry.get('display_resources') or []
-        if isinstance(display_resources, list):
-            for idx, item in enumerate(display_resources):
-                if not isinstance(item, dict):
-                    continue
-                push(item.get('src') or item.get('display_url'), item.get('config_width') or item.get('width') or width, item.get('config_height') or item.get('height') or height, rank=300 + idx)
-
-        push(entry.get('display_url'), width, height, rank=200)
-        push(entry.get('thumbnail_src'), width, height, rank=180)
-        push(entry.get('thumbnail_url'), width, height, rank=170)
-        push(entry.get('image_url'), width, height, rank=160)
-
-        if not candidates:
-            return None, width, height
-
-        candidates.sort(key=lambda item: (((item[1] or 0) * (item[2] or 0)), item[3]), reverse=True)
-        best_url, best_width, best_height, _ = candidates[0]
-        return best_url, best_width or width, best_height or height
-
     def collect_entry(entry: dict, entry_index: int):
         if not isinstance(entry, dict):
             return
         dimensions = entry.get('dimensions') or {}
         width = dimensions.get('width') if isinstance(dimensions, dict) else None
         height = dimensions.get('height') if isinstance(dimensions, dict) else None
-        display_url, width, height = choose_best_image(entry)
+        display_url, width, height, display_source = choose_best_instagram_image(entry)
         media_key = entry.get('id') or entry.get('pk') or entry.get('shortcode')
         is_video = bool(entry.get('is_video') or entry.get('media_type') == 2 or entry.get('__typename') in {'GraphVideo', 'XDTGraphVideo'})
-        video_url = normalize_url(entry.get('video_url'))
+        video_url = normalize_instagram_media_url(entry.get('video_url'))
 
         if not video_url:
             for version in entry.get('video_versions') or []:
                 if not isinstance(version, dict):
                     continue
-                candidate = normalize_url(version.get('url') or version.get('src'))
+                candidate = normalize_instagram_media_url(version.get('url') or version.get('src'))
                 if isinstance(candidate, str) and candidate:
                     video_url = candidate
                     width = version.get('width') or width
@@ -599,7 +656,7 @@ def extract_instagram_media_from_node(node: dict) -> dict:
                 'images': [display_url] if is_instagram_image_candidate(display_url) else [],
                 'image_options': ([{
                     'url': display_url,
-                    'source': 'instagram-html-thumbnail',
+                    'source': display_source or 'instagram-html-thumbnail',
                     'type': 'image',
                     'width': width,
                     'height': height,
@@ -607,11 +664,11 @@ def extract_instagram_media_from_node(node: dict) -> dict:
             }
             result['media_entries'].append(media_entry)
             if is_instagram_image_candidate(display_url):
-                add_image(display_url, width, height, source='instagram-html-thumbnail')
+                add_image(display_url, width, height, source=display_source or 'instagram-html-thumbnail')
             return
 
         if is_instagram_image_candidate(display_url):
-            add_image(display_url, width, height)
+            add_image(display_url, width, height, source=display_source or 'instagram-html')
             result['media_entries'].append({
                 'media_index': len(result['media_entries']),
                 'entry_index': entry_index,
@@ -625,7 +682,7 @@ def extract_instagram_media_from_node(node: dict) -> dict:
                 'images': [display_url],
                 'image_options': [{
                     'url': display_url,
-                    'source': 'instagram-html',
+                    'source': display_source or 'instagram-html',
                     'type': 'image',
                     'width': width,
                     'height': height,
@@ -672,9 +729,7 @@ def extract_instagram_images_from_html(html: str) -> dict:
     }
 
     def normalize_url(url: str | None) -> Optional[str]:
-        if not isinstance(url, str) or not url:
-            return None
-        return unescape(url.replace('\/', '/')).strip()
+        return normalize_instagram_media_url(url)
 
     def append_image_entry(url: str, source: str = 'instagram-meta-image'):
         normalized = normalize_url(url)
@@ -718,60 +773,93 @@ def extract_instagram_images_from_html(html: str) -> dict:
         result['images'] = dedupe_keep_order(result['images'] + (found.get('images') or []))
         result['image_options'] = dedupe_stream_options(result['image_options'] + (found.get('image_options') or []))
         if found.get('media_entries'):
+            existing_keys = {
+                (
+                    item.get('media_type'),
+                    tuple(item.get('streams') or []),
+                    tuple(item.get('images') or []),
+                )
+                for item in result['media_entries']
+            }
             for item in found['media_entries']:
                 copied = dict(item)
+                dedupe_key = (
+                    copied.get('media_type'),
+                    tuple(copied.get('streams') or []),
+                    tuple(copied.get('images') or []),
+                )
+                if dedupe_key in existing_keys:
+                    continue
                 copied['media_index'] = len(result['media_entries'])
                 result['media_entries'].append(copied)
+                existing_keys.add(dedupe_key)
+
+    script_contents = re.findall(r'<script\b[^>]*>(.*?)</script>', html, re.IGNORECASE | re.DOTALL)
+    json_candidates: list[str] = []
+    for raw_script in script_contents:
+        script = (raw_script or '').strip()
+        if not script:
+            continue
+        if script.startswith('{') or script.startswith('['):
+            json_candidates.append(script)
+        for pattern in [
+            r'window\.__additionalDataLoaded\([^,]+,\s*(\{.*?\})\s*\);',
+            r'window\._sharedData\s*=\s*(\{.*?\})\s*;',
+            r'window\.__initialData\s*=\s*(\{.*?\})\s*;',
+            r'window\.__NEXT_DATA__\s*=\s*(\{.*?\})\s*;',
+            r'(\{"require"\:\[.*\]\})',
+        ]:
+            json_candidates.extend(re.findall(pattern, script, re.IGNORECASE | re.DOTALL))
 
     for pattern in [
-        r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
         r'window\.__additionalDataLoaded\([^,]+,\s*(\{.*?\})\s*\);',
+        r'window\._sharedData\s*=\s*(\{.*?\})\s*;',
+        r'window\.__initialData\s*=\s*(\{.*?\})\s*;',
+        r'window\.__NEXT_DATA__\s*=\s*(\{.*?\})\s*;',
         r'"xdt_shortcode_media"\s*:\s*(\{.*?\})(?:,\s*"xdt_|\s*\})',
         r'"shortcode_media"\s*:\s*(\{.*?\})(?:,\s*"\w|\s*\})',
-        r'"carousel_media"\s*:\s*(\[.*?\])',
+        r'"xdt_api__v1__media__shortcode__web_info"\s*:\s*(\{.*?\})(?:,\s*"\w|\s*\})',
         r'"items"\s*:\s*(\[.*?\])',
+        r'"carousel_media"\s*:\s*(\[.*?\])',
+        r'"edge_sidecar_to_children"\s*:\s*(\{.*?\})(?:,\s*"\w|\s*\})',
     ]:
-        for raw_match in re.findall(pattern, html, re.IGNORECASE | re.DOTALL):
-            raw_json = raw_match if isinstance(raw_match, str) else raw_match[0]
-            candidates = [raw_json]
-            if 'xdt_shortcode_media' in pattern:
-                candidates.append('{"xdt_shortcode_media":' + raw_json + '}')
-            if 'shortcode_media' in pattern and 'xdt_shortcode_media' not in pattern:
-                candidates.append('{"shortcode_media":' + raw_json + '}')
-            if 'carousel_media' in pattern:
-                candidates.append('{"carousel_media":' + raw_json + '}')
-            if '"items"' in pattern:
-                candidates.append('{"items":' + raw_json + '}')
-            for candidate in candidates:
-                try:
-                    payload = json.loads(candidate)
-                except Exception:
-                    continue
-                node = dig_first(payload, lambda x: isinstance(x, dict) and (
-                    x.get('edge_sidecar_to_children') is not None
-                    or x.get('display_url')
-                    or x.get('video_url')
-                    or x.get('thumbnail_src')
-                    or x.get('carousel_media') is not None
-                    or x.get('image_versions2') is not None
-                    or x.get('video_versions') is not None
-                    or x.get('items') is not None
-                ))
-                if isinstance(payload, dict) and isinstance(payload.get('shortcode_media'), dict):
-                    node = payload.get('shortcode_media')
-                if isinstance(payload, dict) and isinstance(payload.get('xdt_shortcode_media'), dict):
-                    node = payload.get('xdt_shortcode_media')
-                if isinstance(payload, dict) and isinstance(payload.get('carousel_media'), list):
-                    node = payload
-                if isinstance(payload, dict) and isinstance(payload.get('items'), list):
-                    node = payload
-                if isinstance(node, dict):
-                    merge(extract_instagram_media_from_node(node))
-                    if result['images'] or result['streams']:
-                        break
-            if result['images'] or result['streams']:
+        json_candidates.extend(re.findall(pattern, html, re.IGNORECASE | re.DOTALL))
+
+    seen_json_candidates = set()
+    for raw_json in json_candidates:
+        candidate = raw_json if isinstance(raw_json, str) else raw_json[0]
+        if not isinstance(candidate, str):
+            continue
+        candidate = candidate.strip()
+        if not candidate or candidate in seen_json_candidates:
+            continue
+        seen_json_candidates.add(candidate)
+
+        payloads = [candidate]
+        if candidate.startswith('{') and 'xdt_shortcode_media' in candidate and '"xdt_shortcode_media"' not in candidate:
+            payloads.append('{"xdt_shortcode_media":' + candidate + '}')
+        if candidate.startswith('{') and 'shortcode_media' in candidate and '"shortcode_media"' not in candidate:
+            payloads.append('{"shortcode_media":' + candidate + '}')
+        if candidate.startswith('['):
+            payloads.extend([
+                '{"items":' + candidate + '}',
+                '{"carousel_media":' + candidate + '}',
+            ])
+
+        for payload_candidate in payloads:
+            try:
+                payload = json.loads(payload_candidate)
+            except Exception:
+                continue
+            merged_any = False
+            for node in iter_instagram_media_nodes(payload):
+                merge(extract_instagram_media_from_node(node))
+                if result['images'] or result['streams']:
+                    merged_any = True
+            if merged_any and result['media_entries']:
                 break
-        if result['images'] or result['streams']:
+        if result['media_entries'] and (result['images'] or result['streams']):
             break
 
     if not result['images']:
@@ -790,16 +878,17 @@ def extract_instagram_images_from_html(html: str) -> dict:
             append_image_entry(attrs.get('content'), source='instagram-meta-image')
 
     if not result['images']:
-        for candidate in re.findall(r'https?:\/\/[^"\'\s<>]+', html, re.IGNORECASE):
+        for candidate in re.findall(r"https?:\\/\\/[^\"'\\s<>]+", html, re.IGNORECASE):
             normalized = normalize_url(candidate)
             if is_instagram_image_candidate(normalized):
                 append_image_entry(normalized, source='instagram-html-raw-image')
-        for candidate in re.findall(r'https?://[^"\'\s<>]+', html, re.IGNORECASE):
+        for candidate in re.findall(r"https?://[^\"'\\s<>]+", html, re.IGNORECASE):
             normalized = normalize_url(candidate)
             if is_instagram_image_candidate(normalized):
                 append_image_entry(normalized, source='instagram-html-raw-image')
 
     return result
+
 
 def normalize_douyin_share_url(url: str) -> str:
     match = re.search(r'/video/(\d+)', url)
@@ -1352,14 +1441,14 @@ def extract_instagram_media(meta: dict) -> tuple[list[str], list[dict], list[str
         entry_images = []
         entry_image_options = []
 
-        direct = entry.get('url')
+        direct = normalize_instagram_media_url(entry.get('url'))
         if isinstance(direct, str) and ('.mp4' in direct or '.m3u8' in direct):
             if not is_probably_audio_only_format(entry):
                 entry_streams.append(direct)
                 entry_stream_options.append(build_stream_option(direct, entry, source='yt-dlp-instagram-direct'))
 
         for fmt in entry.get('formats', []) or []:
-            fmt_url = fmt.get('url')
+            fmt_url = normalize_instagram_media_url(fmt.get('url'))
             if not isinstance(fmt_url, str):
                 continue
             if '.mp4' not in fmt_url and '.m3u8' not in fmt_url:
@@ -1369,20 +1458,27 @@ def extract_instagram_media(meta: dict) -> tuple[list[str], list[dict], list[str
             entry_streams.append(fmt_url)
             entry_stream_options.append(build_stream_option(fmt_url, fmt, source='yt-dlp-instagram'))
 
-        for thumb in entry.get('thumbnails', []) or []:
-            image_url = thumb.get('url')
-            if not isinstance(image_url, str) or not is_direct_image_url(image_url):
-                continue
+        for image_url, width, height, _, source in iter_instagram_candidate_images(entry):
             entry_images.append(image_url)
             entry_image_options.append({
                 'url': image_url,
-                'source': 'yt-dlp-instagram-thumbnail',
+                'source': source.replace('instagram-', 'yt-dlp-instagram-'),
                 'type': 'image',
-                'width': thumb.get('width'),
-                'height': thumb.get('height'),
-                'preference': thumb.get('preference'),
-                'id': thumb.get('id'),
+                'width': width,
+                'height': height,
             })
+
+        if not entry_images:
+            best_image, width, height, source = choose_best_instagram_image(entry)
+            if is_instagram_image_candidate(best_image):
+                entry_images.append(best_image)
+                entry_image_options.append({
+                    'url': best_image,
+                    'source': (source or 'yt-dlp-instagram-image').replace('instagram-', 'yt-dlp-instagram-'),
+                    'type': 'image',
+                    'width': width,
+                    'height': height,
+                })
 
         entry_streams = dedupe_keep_order(entry_streams)
         entry_stream_options = dedupe_stream_options(entry_stream_options)
