@@ -154,6 +154,14 @@ http://你的机器IP:9151
 docker compose up -d
 ```
 
+如果你要测 dev，不要只口头说"我部署 dev 了"，要明确把 tag 带进去：
+
+```bash
+MT_IMAGE_TAG=dev docker compose pull && MT_IMAGE_TAG=dev docker compose up -d
+```
+
+不带这个环境变量时，compose 默认还是 `okhao/mt:latest`。
+
 默认挂载：
 
 - `./data -> /app/data`

@@ -1,6 +1,6 @@
 services:
   mt-downloader:
-    image: okhao/mt:latest
+    image: okhao/mt:${MT_IMAGE_TAG:-latest}
     container_name: mt-downloader
     ports:
       - "9151:8080"
