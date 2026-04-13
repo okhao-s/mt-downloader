@@ -257,6 +257,50 @@ def test_home_sets_no_store_cache_headers():
     assert response.headers['Expires'] == '0'
 
 
+def test_extract_instagram_images_from_html_real_shortcode_meta_only_fallback():
+    import requests
+    html = requests.get('https://www.instagram.com/p/DWyBuXTDkXw/', headers={'User-Agent': 'Mozilla/5.0'}, timeout=20).text
+    result = core.extract_instagram_images_from_html(html)
+    assert result['images']
+    assert result['media_entries']
+    assert result['media_entries'][0]['media_type'] == 'image'
+    assert any('scontent-' in url or 'cdninstagram.com' in url for url in result['images'])
+
+
+def test_extract_instagram_images_from_html_supports_items_mixed_shape():
+    html = """
+    <html><head>
+      <script type="application/ld+json">{
+        "items": [
+          {
+            "id": "img-1",
+            "image_versions2": {"candidates": [
+              {"url": "https://scontent.cdninstagram.com/v/t51.2885-15/a1.jpg", "width": 720, "height": 720},
+              {"url": "https://scontent.cdninstagram.com/v/t51.2885-15/a2.jpg", "width": 1080, "height": 1080}
+            ]}
+          },
+          {
+            "id": "video-1",
+            "media_type": 2,
+            "video_versions": [
+              {"url": "https://scontent.cdninstagram.com/v/t50.2886-16/clip.mp4", "width": 720, "height": 1280}
+            ],
+            "image_versions2": {"candidates": [
+              {"url": "https://scontent.cdninstagram.com/v/t51.2885-15/thumb.jpg", "width": 720, "height": 1280}
+            ]}
+          }
+        ]
+      }</script>
+    </head></html>
+    """
+    result = core.extract_instagram_images_from_html(html)
+    assert 'https://scontent.cdninstagram.com/v/t51.2885-15/a2.jpg' in result['images']
+    assert 'https://scontent.cdninstagram.com/v/t50.2886-16/clip.mp4' in result['streams']
+    assert len(result['media_entries']) == 2
+    assert result['media_entries'][0]['media_type'] == 'image'
+    assert result['media_entries'][1]['media_type'] == 'video'
+
+
 if __name__ == "__main__":
     test_detect_platform_recognizes_instagram()
     test_get_download_subdir_uses_image_dir_for_instagram_images()
@@ -270,4 +314,5 @@ if __name__ == "__main__":
     test_should_use_site_cookies_supports_instagram()
     test_home_template_includes_asset_version_and_instagram_upload_entry()
     test_home_sets_no_store_cache_headers()
+    test_extract_instagram_images_from_html_supports_items_mixed_shape()
     print("PASS: test_instagram_download")
