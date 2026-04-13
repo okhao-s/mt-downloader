@@ -71,6 +71,42 @@ def test_discover_stream_marks_instagram_photo_post_as_image():
     assert len(info["images"]) == 2
     assert info["streams"] == []
 
+def test_discover_stream_instagram_photo_falls_back_to_html_when_ytdlp_reports_no_video(monkeypatch=None):
+    html = """
+    <html><head>
+      <meta property="og:title" content="图片帖子" />
+      <script type="application/ld+json">{
+        "shortcode_media": {
+          "__typename": "GraphImage",
+          "id": "photo-1",
+          "display_url": "https://scontent.cdninstagram.com/v/t51.2885-15/1.jpg?stp=dst-jpg_e35",
+          "dimensions": {"width": 1080, "height": 1350}
+        }
+      }</script>
+    </head></html>
+    """
+    old_fetch = core.fetch_webpage_html
+    old_probe = core.probe_webpage
+    old_extract = core.extract_info_with_ytdlp
+    try:
+        core.fetch_webpage_html = lambda *args, **kwargs: html
+        core.probe_webpage = lambda *args, **kwargs: {"streams": [], "stream_options": [], "title": None}
+        def fail_ytdlp(*args, **kwargs):
+            raise RuntimeError("ERROR: [Instagram] abc: No video formats found!")
+        core.extract_info_with_ytdlp = fail_ytdlp
+        info = core.discover_stream("https://www.instagram.com/p/photo123/")
+    finally:
+        core.fetch_webpage_html = old_fetch
+        core.probe_webpage = old_probe
+        core.extract_info_with_ytdlp = old_extract
+
+    assert info["media_type"] == "image"
+    assert info["images"] == ["https://scontent.cdninstagram.com/v/t51.2885-15/1.jpg?stp=dst-jpg_e35"]
+    assert info["streams"] == []
+    assert info["extractor"] == "instagram-html"
+    assert any("No video formats found" in err for err in info["errors"])
+
+
 
 def test_download_all_instagram_mixed_media_creates_jobs_per_entry():
     old_load_config = app.load_config
@@ -228,6 +264,7 @@ if __name__ == "__main__":
     test_resolve_download_mode_uses_ytdlp_for_instagram_video()
     test_extract_instagram_media_keeps_video_and_image_entries()
     test_discover_stream_marks_instagram_photo_post_as_image()
+    test_discover_stream_instagram_photo_falls_back_to_html_when_ytdlp_reports_no_video()
     test_download_all_instagram_mixed_media_creates_jobs_per_entry()
     test_resolve_site_cookies_path_uses_instagram_cookie_config()
     test_should_use_site_cookies_supports_instagram()
