@@ -152,7 +152,7 @@ http://你的机器IP:9151
 
 - `POST /api/picture/push`
 - 用途：接收页面扫描结果，直接把图片下载到本地
-- 目标目录：`/downloads/picture/<sanitize子目录名>/`
+- 目标目录：`/downloads/photo/<sanitize标题>/`
 - 鉴权：可选；如果配置了 `MT_API_TOKEN`，请求需带 `X-MT-Token: <token>` 或 `Authorization: Bearer <token>`
 
 请求体至少支持这些字段：
@@ -174,7 +174,8 @@ http://你的机器IP:9151
 
 - 下载图片时会把 `referer` 透传成请求头
 - `links` 会自动去重
-- 返回里会给出 `job`、`accepted`、`download_dir`
+- 子目录优先取 `pageTitle` 的 sanitize 结果；只有标题为空时才回退到 `suggestedSubdir`，再不行才回退 `pageHost`
+- 返回里会给出 `job`、`accepted`、`download_dir`（格式改为 `photo/<sanitize标题>`）
 
 最小调用示例：
 
@@ -216,7 +217,7 @@ docker compose up -d
 MT_IMAGE_TAG=dev docker compose pull && MT_IMAGE_TAG=dev docker compose up -d
 ```
 
-不带这个环境变量时，compose 默认还是 `okhao/mt:latest`。
+不带这个环境变量时，compose 默认还是 `okhao/mt:latest`。如果这次目录口径改动需要联调，dev 镜像也要重新构建并用 `MT_IMAGE_TAG=dev` 明确拉起，别混用旧 tag。
 
 默认挂载：
 

@@ -65,7 +65,7 @@ MT_API_TOKEN = os.getenv("MT_API_TOKEN", "").strip()
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 COOKIES_DIR.mkdir(parents=True, exist_ok=True)
-PICTURE_ROOT_DIR = DOWNLOAD_DIR / "picture"
+PICTURE_ROOT_DIR = DOWNLOAD_DIR / "photo"
 PICTURE_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -744,7 +744,11 @@ def sanitize_picture_subdir_name(name: str | None) -> str:
     value = re.sub(r"[^0-9A-Za-z一-鿿._ -]+", "_", value)
     value = re.sub(r"\s+", "_", value)
     value = re.sub(r"_+", "_", value).strip("._ ")
-    return value[:120] or f"picture-{uuid4().hex[:8]}"
+    return value[:120] or f"photo-{uuid4().hex[:8]}"
+
+
+def resolve_picture_subdir_name(page_title: str | None, suggested_subdir: str | None, page_host: str | None = None) -> str:
+    return page_title or suggested_subdir or page_host or "photo"
 
 
 def get_picture_download_subdir(name: str | None) -> Path:
@@ -803,7 +807,7 @@ def create_picture_push_job(payload: PicturePushPayload, retry_of: str | None = 
         raise HTTPException(status_code=400, detail="links 里没有可下载图片")
 
     referer = str(payload.referer or page_url).strip() or page_url
-    subdir_name = payload.suggestedSubdir or payload.pageHost or payload.pageTitle or "picture"
+    subdir_name = resolve_picture_subdir_name(payload.pageTitle, payload.suggestedSubdir, payload.pageHost)
     download_dir = get_picture_download_subdir(subdir_name)
     base_name = build_picture_base_name(payload.pageTitle, payload.pageHost)
     output_name = allocate_output_name(build_image_output_name(base_name, 0, len(image_urls), image_urls[0]), download_dir=download_dir)
@@ -1530,7 +1534,7 @@ async def picture_push(request: Request, payload: PicturePushPayload):
         "ok": True,
         "job": job,
         "accepted": len(job.get("image_urls") or []),
-        "download_dir": f"picture/{job.get('picture_subdir')}",
+        "download_dir": f"photo/{job.get('picture_subdir')}",
     }
 
 
