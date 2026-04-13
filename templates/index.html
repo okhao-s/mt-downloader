@@ -188,6 +188,17 @@
             <small id="bilibili-cookies-hint" class="field-hint">未上传 cookies，Bilibili 可能会返回 412 或拿不到视频流。</small>
           </label>
 
+          <label class="field field-wide">
+            <span>instagramck（Instagram cookies 路径）</span>
+            <input id="cfg_instagramck" value="{{ config.instagramck or config.instagram_cookies_path or '/app/data/cookies/instagram.cookies.txt' }}" placeholder="/app/data/cookies/instagram.cookies.txt">
+          </label>
+
+          <label class="field field-wide">
+            <span>上传 Instagram 浏览器 cookies.txt</span>
+            <input id="instagram_cookies_file" type="file" accept=".txt,text/plain">
+            <small id="instagram-cookies-hint" class="field-hint">未上传 cookies，Instagram 先按游客模式试。遇到 empty media response / 登录要求时建议补 cookies。</small>
+          </label>
+
           <div class="settings-section-title field-wide">企业微信接入</div>
 
           <label class="field field-wide">
@@ -246,6 +257,7 @@
           <button class="btn btn-inline" type="button" onclick="uploadTwitterCookies()">上传 X / Twitter cookies</button>
           <button class="btn btn-inline" type="button" onclick="uploadYouTubeCookies()">上传 YouTube cookies</button>
           <button class="btn btn-inline" type="button" onclick="uploadBilibiliCookies()">上传 Bilibili cookies</button>
+          <button class="btn btn-inline" type="button" onclick="uploadInstagramCookies()">上传 Instagram cookies</button>
         </div>
       </div>
     </section>

@@ -48,6 +48,7 @@ COOKIES_DIR = DATA_DIR / "cookies"
 TWITTER_COOKIES_PATH = COOKIES_DIR / "twitter.cookies.txt"
 YOUTUBE_COOKIES_PATH = COOKIES_DIR / "youtube.cookies.txt"
 BILIBILI_COOKIES_PATH = COOKIES_DIR / "bilibili.cookies.txt"
+INSTAGRAM_COOKIES_PATH = COOKIES_DIR / "instagram.cookies.txt"
 DOUYIN_COOKIES_PATH = COOKIES_DIR / "douyin.cookies.txt"
 DOUYIN_FRESH_COOKIES_PATH = COOKIES_DIR / "douyin.fresh.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
@@ -357,18 +358,22 @@ def enrich_config_view(cfg: dict) -> dict:
     cfg.setdefault("xck", cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH))
     cfg.setdefault("youtubeck", cfg.get("youtube_cookies_path") or str(YOUTUBE_COOKIES_PATH))
     cfg.setdefault("bilibilick", cfg.get("bilibili_cookies_path") or str(BILIBILI_COOKIES_PATH))
+    cfg.setdefault("instagramck", cfg.get("instagram_cookies_path") or str(INSTAGRAM_COOKIES_PATH))
     cfg.setdefault("douyinck", cfg.get("douyin_cookies_path") or str(DOUYIN_COOKIES_PATH))
     cfg["twitter_cookies_path"] = cfg.get("xck") or str(TWITTER_COOKIES_PATH)
     cfg["youtube_cookies_path"] = cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
     cfg["bilibili_cookies_path"] = cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
+    cfg["instagram_cookies_path"] = cfg.get("instagramck") or str(INSTAGRAM_COOKIES_PATH)
     cfg["douyin_cookies_path"] = cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
     cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
     cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
+    cfg["instagramck_exists"] = Path(str(cfg.get("instagramck") or INSTAGRAM_COOKIES_PATH)).exists()
     cfg["douyinck_exists"] = Path(str(cfg.get("douyinck") or DOUYIN_COOKIES_PATH)).exists()
     cfg["twitter_cookies_exists"] = cfg["xck_exists"]
     cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
+    cfg["instagram_cookies_exists"] = cfg["instagramck_exists"]
     cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
     cfg["wecom_ready"] = is_wecom_ready(cfg)
     cfg["wecom_forward_enabled"] = is_wecom_forward_enabled(cfg)
@@ -784,7 +789,7 @@ def schedule_retry(job_id: str, delay_seconds: int):
 
 
 def should_use_site_cookies(target_url: str | None, cookies_path: str | None) -> bool:
-    return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili", "douyin"})
+    return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili", "douyin", "instagram"})
 
 
 def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, cfg: dict | None = None) -> str | None:
@@ -859,10 +864,12 @@ class ConfigPayload(BaseModel):
     xck: str | None = str(TWITTER_COOKIES_PATH)
     youtubeck: str | None = str(YOUTUBE_COOKIES_PATH)
     bilibilick: str | None = str(BILIBILI_COOKIES_PATH)
+    instagramck: str | None = str(INSTAGRAM_COOKIES_PATH)
     douyinck: str | None = str(DOUYIN_COOKIES_PATH)
     twitter_cookies_path: str | None = None
     youtube_cookies_path: str | None = None
     bilibili_cookies_path: str | None = None
+    instagram_cookies_path: str | None = None
     douyin_cookies_path: str | None = None
     wecom_enabled: bool = False
     wecom_corp_id: str | None = ""
@@ -913,6 +920,8 @@ def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
         return cfg.get('youtubeck') or cfg.get('youtube_cookies_path') or str(YOUTUBE_COOKIES_PATH)
     if is_bilibili_url(url):
         return cfg.get('bilibilick') or cfg.get('bilibili_cookies_path') or str(BILIBILI_COOKIES_PATH)
+    if is_instagram_url(url):
+        return cfg.get('instagramck') or cfg.get('instagram_cookies_path') or str(INSTAGRAM_COOKIES_PATH)
     if is_douyin_url(url):
         configured = cfg.get('douyinck') or cfg.get('douyin_cookies_path') or str(DOUYIN_COOKIES_PATH)
         fresh_path = DOUYIN_FRESH_COOKIES_PATH
@@ -1599,10 +1608,12 @@ def set_config(payload: ConfigPayload):
     cfg["xck"] = payload.xck or payload.twitter_cookies_path or cfg.get("xck") or str(TWITTER_COOKIES_PATH)
     cfg["youtubeck"] = payload.youtubeck or payload.youtube_cookies_path or cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
     cfg["bilibilick"] = payload.bilibilick or payload.bilibili_cookies_path or cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
+    cfg["instagramck"] = payload.instagramck or payload.instagram_cookies_path or cfg.get("instagramck") or str(INSTAGRAM_COOKIES_PATH)
     cfg["douyinck"] = payload.douyinck or payload.douyin_cookies_path or cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
     cfg["twitter_cookies_path"] = cfg["xck"]
     cfg["youtube_cookies_path"] = cfg["youtubeck"]
     cfg["bilibili_cookies_path"] = cfg["bilibilick"]
+    cfg["instagram_cookies_path"] = cfg["instagramck"]
     cfg["douyin_cookies_path"] = cfg["douyinck"]
     cfg["wecom_enabled"] = bool(payload.wecom_enabled)
     cfg["wecom_corp_id"] = str(payload.wecom_corp_id or "").strip()
@@ -1685,3 +1696,8 @@ async def upload_youtube_cookies(file: UploadFile = File(...)):
 @app.post("/api/upload/bilibili-cookies")
 async def upload_bilibili_cookies(file: UploadFile = File(...)):
     return await save_uploaded_cookie_file(file, BILIBILI_COOKIES_PATH, "bilibili_cookies_path", "bilibili_cookies_exists")
+
+
+@app.post("/api/upload/instagram-cookies")
+async def upload_instagram_cookies(file: UploadFile = File(...)):
+    return await save_uploaded_cookie_file(file, INSTAGRAM_COOKIES_PATH, "instagram_cookies_path", "instagram_cookies_exists")

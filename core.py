@@ -34,14 +34,17 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     xck = cfg.get("xck") or cfg.get("twitter_cookies_path") or "/app/data/cookies/twitter.cookies.txt"
     youtubeck = cfg.get("youtubeck") or cfg.get("youtube_cookies_path") or "/app/data/cookies/youtube.cookies.txt"
     bilibilick = cfg.get("bilibilick") or cfg.get("bilibili_cookies_path") or "/app/data/cookies/bilibili.cookies.txt"
+    instagramck = cfg.get("instagramck") or cfg.get("instagram_cookies_path") or "/app/data/cookies/instagram.cookies.txt"
     douyinck = cfg.get("douyinck") or cfg.get("douyin_cookies_path") or "/app/data/cookies/douyin.cookies.txt"
     cfg["xck"] = xck
     cfg["youtubeck"] = youtubeck
     cfg["bilibilick"] = bilibilick
+    cfg["instagramck"] = instagramck
     cfg["douyinck"] = douyinck
     cfg["twitter_cookies_path"] = xck
     cfg["youtube_cookies_path"] = youtubeck
     cfg["bilibili_cookies_path"] = bilibilick
+    cfg["instagram_cookies_path"] = instagramck
     cfg["douyin_cookies_path"] = douyinck
     cfg["wecom_enabled"] = bool(cfg.get("wecom_enabled", False))
     cfg["wecom_corp_id"] = str(cfg.get("wecom_corp_id") or "")
@@ -67,6 +70,7 @@ def load_config() -> dict:
         "xck": "/app/data/cookies/twitter.cookies.txt",
         "youtubeck": "/app/data/cookies/youtube.cookies.txt",
         "bilibilick": "/app/data/cookies/bilibili.cookies.txt",
+        "instagramck": "/app/data/cookies/instagram.cookies.txt",
         "douyinck": "/app/data/cookies/douyin.cookies.txt",
         "wecom_enabled": False,
         "wecom_corp_id": "",

@@ -192,6 +192,7 @@ docker compose up -d
 - `/app/data/cookies/twitter.cookies.txt`
 - `/app/data/cookies/youtube.cookies.txt`
 - `/app/data/cookies/bilibili.cookies.txt`
+- `/app/data/cookies/instagram.cookies.txt`
 - `/app/data/cookies/douyin.cookies.txt`
 - `/app/data/cookies/douyin.fresh.cookies.txt`
 
@@ -200,7 +201,35 @@ docker compose up -d
 - X：有登录态/年龄限制/敏感内容时，尽量提供可用 cookies
 - YouTube：遇到地区/年龄/登录限制时补 cookies
 - Bilibili：遇到 412、风控、清晰度受限时补 cookies
+- Instagram：遇到 `empty media response`、帖子需要登录态、游客拿不到媒体时补 cookies
 - Douyin：遇到风控/验证码时，用最新 fresh cookies
+
+### Instagram 特别说明
+
+Instagram 现在对游客访问收得更紧：
+
+- 有些帖子 / Reels 未登录就会直接返回空媒体
+- `yt-dlp` 常见报错会是 `Instagram sent an empty media response`
+- 这类情况通常不是我们代码逻辑坏了，而是 **源站要求登录态**
+
+这一版已经补上：
+
+- `/app/data/cookies/instagram.cookies.txt` 默认路径
+- 设置页可直接上传 Instagram `cookies.txt`
+- 解析和下载都会自动带上 Instagram cookies
+- `docker-compose.yml` 现有 `./data:/app/data` 挂载可直接复用，不用额外挂目录
+
+最省事的用法：
+
+1. 浏览器里登录 Instagram
+2. 导出 Netscape 格式 `cookies.txt`
+3. 在设置页点“上传 Instagram cookies”
+4. 重新贴链接直接下载
+
+如果还是失败，再看两件事：
+
+- cookies 是否过期
+- 当前 IP / 代理 是否也被 Instagram 风控
 
 ### X / Twitter 特别说明
 

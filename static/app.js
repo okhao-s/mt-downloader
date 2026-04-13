@@ -212,6 +212,15 @@ function updateBilibiliCookiesHint(data = {}) {
     : `未上传 cookies，Bilibili 可能触发 412 或拿不到视频流。建议上传浏览器导出的 cookies.txt。`;
 }
 
+function updateInstagramCookiesHint(data = {}) {
+  const hint = $('instagram-cookies-hint');
+  if (!hint) return;
+  const path = data?.instagramck || data?.instagram_cookies_path || '/app/data/cookies/instagram.cookies.txt';
+  hint.textContent = data?.instagram_cookies_exists
+    ? `已检测到 cookies：${path}。Instagram 解析和下载会自动带上。`
+    : `未上传 cookies，Instagram 先按游客模式试。遇到 empty media response / 登录要求时建议上传浏览器导出的 cookies.txt。`;
+}
+
 function updateWecomHints(data = {}) {
   const status = $('wecom-status-hint');
   if (status) {
@@ -267,6 +276,9 @@ function applyConfigToForm(data = {}) {
   if ($('cfg_bilibilick')) {
     $('cfg_bilibilick').value = data?.bilibilick || data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
   }
+  if ($('cfg_instagramck')) {
+    $('cfg_instagramck').value = data?.instagramck || data?.instagram_cookies_path || '/app/data/cookies/instagram.cookies.txt';
+  }
   if ($('cfg_wecom_enabled')) {
     $('cfg_wecom_enabled').checked = Boolean(data?.wecom_enabled);
   }
@@ -297,6 +309,7 @@ function applyConfigToForm(data = {}) {
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
   updateBilibiliCookiesHint(data);
+  updateInstagramCookiesHint(data);
   updateWecomHints(data);
 }
 
@@ -657,6 +670,7 @@ async function saveConfig() {
       xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
       bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
+      instagramck: $('cfg_instagramck')?.value.trim() || '/app/data/cookies/instagram.cookies.txt',
       wecom_enabled: Boolean($('cfg_wecom_enabled')?.checked),
       wecom_corp_id: $('cfg_wecom_corp_id')?.value.trim() || '',
       wecom_agent_id: $('cfg_wecom_agent_id')?.value.trim() || '',
@@ -770,6 +784,39 @@ async function uploadBilibiliCookies() {
       { label: '下一步', value: '重新贴 Bilibili 链接解析或下载；它会自动带 cookies。' },
     ], { variant: 'success' });
     setStatus('Bilibili cookies 已上传', 'success');
+  } catch (e) {
+    setStatus(`上传失败：${e.message}`, 'error');
+  }
+}
+
+async function uploadInstagramCookies() {
+  const fileInput = $('instagram_cookies_file');
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    setStatus('先选一个 Instagram cookies.txt 文件', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    setStatus('上传 Instagram cookies.txt…', 'loading');
+    const res = await fetch('/api/upload/instagram-cookies', {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store'
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.error || `upload failed (${res.status})`);
+    await loadConfig();
+    renderSummary([
+      { label: '当前状态', value: 'Instagram cookies 已上传', success: true, highlight: true },
+      { label: '保存路径', value: data?.path || '/app/data/cookies/instagram.cookies.txt' },
+      { label: '文件大小', value: `${Number(data?.size || 0)} bytes` },
+      { label: '下一步', value: '重新贴 Instagram 链接解析或下载；它会自动带 cookies。' },
+    ], { variant: 'success' });
+    setStatus('Instagram cookies 已上传', 'success');
   } catch (e) {
     setStatus(`上传失败：${e.message}`, 'error');
   }
@@ -1200,6 +1247,9 @@ window.deleteJob = deleteJob;
 window.clearHistory = clearHistory;
 window.saveConfig = saveConfig;
 window.uploadTwitterCookies = uploadTwitterCookies;
+window.uploadYouTubeCookies = uploadYouTubeCookies;
+window.uploadBilibiliCookies = uploadBilibiliCookies;
+window.uploadInstagramCookies = uploadInstagramCookies;
 window.toggleSettingsPanel = toggleSettingsPanel;
 window.toggleHistoryPanel = toggleHistoryPanel;
 

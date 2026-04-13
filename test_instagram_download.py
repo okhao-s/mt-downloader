@@ -143,6 +143,24 @@ def test_download_all_instagram_mixed_media_creates_jobs_per_entry():
     assert captured[1]["stream_index"] == 1
 
 
+def test_resolve_site_cookies_path_uses_instagram_cookie_config():
+    cfg = {
+        "instagramck": "/tmp/instagram.cookies.txt",
+        "xck": "/tmp/twitter.cookies.txt",
+    }
+    assert app.resolve_site_cookies_path("https://www.instagram.com/p/abc123/", cfg) == "/tmp/instagram.cookies.txt"
+
+
+def test_should_use_site_cookies_supports_instagram(tmp_path=None):
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        cookie_path = Path(d) / 'instagram.cookies.txt'
+        cookie_path.write_text('# Netscape HTTP Cookie File\n', encoding='utf-8')
+        assert app.should_use_site_cookies("https://www.instagram.com/reel/abc123/", str(cookie_path)) is True
+
+
 if __name__ == "__main__":
     test_detect_platform_recognizes_instagram()
     test_get_download_subdir_uses_image_dir_for_instagram_images()
@@ -151,4 +169,6 @@ if __name__ == "__main__":
     test_extract_instagram_media_keeps_video_and_image_entries()
     test_discover_stream_marks_instagram_photo_post_as_image()
     test_download_all_instagram_mixed_media_creates_jobs_per_entry()
+    test_resolve_site_cookies_path_uses_instagram_cookie_config()
+    test_should_use_site_cookies_supports_instagram()
     print("PASS: test_instagram_download")
