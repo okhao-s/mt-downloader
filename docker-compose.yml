@@ -8,6 +8,7 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
       - WECOM_FORWARD_URL=${WECOM_FORWARD_URL:-}
       - WECOM_FORWARD_TOKEN=${WECOM_FORWARD_TOKEN:-}
+      - MT_API_TOKEN=${MT_API_TOKEN:-}
     volumes:
       - /root/docker/video:/downloads
       - ./data:/app/data

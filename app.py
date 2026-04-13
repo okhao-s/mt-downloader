@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import os
 import re
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 import requests
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -40,6 +42,7 @@ from core import (
 from wecom import WeComClient, WeComCrypto, build_passive_text_reply
 
 app = FastAPI(title="M3U8 Downloader")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 BASE_DIR = Path(__file__).parent
 APP_VERSION = os.getenv("APP_VERSION", "dev").strip() or "dev"
 APP_COMMIT = os.getenv("APP_COMMIT", "").strip()
@@ -58,9 +61,12 @@ BILIBILI_COOKIES_PATH = COOKIES_DIR / "bilibili.cookies.txt"
 DOUYIN_COOKIES_PATH = COOKIES_DIR / "douyin.cookies.txt"
 DOUYIN_FRESH_COOKIES_PATH = COOKIES_DIR / "douyin.fresh.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+MT_API_TOKEN = os.getenv("MT_API_TOKEN", "").strip()
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+PICTURE_ROOT_DIR = DOWNLOAD_DIR / "picture"
+PICTURE_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -732,6 +738,149 @@ def build_suggested_output_name(display_title: str | None, fallback_prefix: str 
     return normalize_filename(base_name)
 
 
+def sanitize_picture_subdir_name(name: str | None) -> str:
+    value = str(name or "").strip()
+    value = re.sub(r"[\/]+", "_", value)
+    value = re.sub(r"[^0-9A-Za-z一-鿿._ -]+", "_", value)
+    value = re.sub(r"\s+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("._ ")
+    return value[:120] or f"picture-{uuid4().hex[:8]}"
+
+
+def get_picture_download_subdir(name: str | None) -> Path:
+    target = PICTURE_ROOT_DIR / sanitize_picture_subdir_name(name)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def build_picture_base_name(page_title: str | None, page_host: str | None = None) -> str:
+    candidate = str(page_title or "").strip() or str(page_host or "").strip() or f"picture-{uuid4().hex[:8]}"
+    candidate = normalize_filename(candidate)
+    candidate = Path(candidate).stem
+    return candidate or f"picture-{uuid4().hex[:8]}"
+
+
+def authorize_mt_request(request: Request):
+    if not MT_API_TOKEN:
+        return
+    header_token = str(request.headers.get("x-mt-token") or "").strip()
+    auth_header = str(request.headers.get("authorization") or "").strip()
+    bearer_token = ""
+    if auth_header.lower().startswith("bearer "):
+        bearer_token = auth_header[7:].strip()
+    if header_token == MT_API_TOKEN or bearer_token == MT_API_TOKEN:
+        return
+    raise HTTPException(status_code=401, detail="mt token 无效")
+
+
+def build_picture_request_payload(payload: PicturePushPayload) -> dict:
+    return {
+        "kind": "picture_push",
+        "source": payload.source,
+        "pageUrl": payload.pageUrl,
+        "pageTitle": payload.pageTitle,
+        "pageHost": payload.pageHost,
+        "suggestedSubdir": payload.suggestedSubdir,
+        "referer": payload.referer,
+        "links": [item.model_dump() for item in payload.links],
+    }
+
+
+def create_picture_push_job(payload: PicturePushPayload, retry_of: str | None = None):
+    page_url = normalize_input_url(payload.pageUrl)
+    if not page_url:
+        raise HTTPException(status_code=400, detail="请提供有效 pageUrl")
+
+    image_urls: list[str] = []
+    seen: set[str] = set()
+    for item in payload.links:
+        raw_url = normalize_image_download_url(str(item.url or "").strip())
+        if not raw_url or raw_url in seen:
+            continue
+        seen.add(raw_url)
+        image_urls.append(raw_url)
+    if not image_urls:
+        raise HTTPException(status_code=400, detail="links 里没有可下载图片")
+
+    referer = str(payload.referer or page_url).strip() or page_url
+    subdir_name = payload.suggestedSubdir or payload.pageHost or payload.pageTitle or "picture"
+    download_dir = get_picture_download_subdir(subdir_name)
+    base_name = build_picture_base_name(payload.pageTitle, payload.pageHost)
+    output_name = allocate_output_name(build_image_output_name(base_name, 0, len(image_urls), image_urls[0]), download_dir=download_dir)
+    output_path = download_dir / output_name
+
+    retry_count = 0
+    if retry_of:
+        with jobs_lock:
+            source_job = next((item for item in jobs if item.get("id") == retry_of), None)
+            retry_count = int(source_job.get("retry_count") or 0) + 1 if source_job else 1
+
+    queued_ahead = count_queued_jobs()
+    active_now = count_active_jobs()
+    now = iso_now()
+    sanitized_subdir = download_dir.name
+    job = {
+        "id": uuid4().hex[:10],
+        "source_url": page_url,
+        "stream_url": None,
+        "stream_index": None,
+        "media_index": None,
+        "output": output_name,
+        "download_dir": str(download_dir),
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "proxy": "",
+        "status": "queued",
+        "status_text": f"排队中 · 当前下载槽位 {active_now}/{MAX_CONCURRENT_DOWNLOADS}" + (f"，前面还有 {queued_ahead} 个任务" if queued_ahead else ""),
+        "progress": 0,
+        "title": payload.pageTitle or sanitized_subdir,
+        "platform": "picture-push",
+        "media_type": "image",
+        "image_urls": image_urls,
+        "image_count": len(image_urls),
+        "saved_files": [],
+        "output_base": base_name,
+        "error": "",
+        "retry_count": retry_count,
+        "retry_of": retry_of or "",
+        "retry_scheduled": False,
+        "deleted": False,
+        "deleted_at": None,
+        "download_via": "image",
+        "extractor": "plugin-picture-push",
+        "request_payload": build_picture_request_payload(payload),
+        "wecom_to_user": "",
+        "wecom_started_notified": False,
+        "wecom_started_notified_at": None,
+        "wecom_started_notifying": False,
+        "wecom_done_notified": False,
+        "wecom_done_notified_at": None,
+        "wecom_done_notifying": False,
+        "wecom_failed_notified": False,
+        "wecom_failed_notified_at": None,
+        "wecom_failed_notifying": False,
+        "picture_subdir": sanitized_subdir,
+    }
+    add_job(job)
+
+    download_executor.submit(
+        run_download_job,
+        job["id"],
+        page_url,
+        output_path,
+        True,
+        None,
+        referer,
+        None,
+        None,
+        "image",
+        page_url,
+    )
+    return job
+
+
 async def run_in_executor(executor: ThreadPoolExecutor, func, *args, **kwargs):
     loop = asyncio.get_running_loop()
     if kwargs:
@@ -854,6 +1003,25 @@ class DownloadPayload(ParsePayload):
 class BatchDownloadPayload(ParsePayload):
     output: str | None = None
     download_all_streams: bool = True
+
+
+class PicturePushLink(BaseModel):
+    url: str
+    source: str | None = None
+    width: int | None = None
+    height: int | None = None
+    priority: int | None = None
+    kind: str | None = None
+
+
+class PicturePushPayload(BaseModel):
+    source: str | None = None
+    pageUrl: str
+    pageTitle: str | None = None
+    pageHost: str | None = None
+    suggestedSubdir: str | None = None
+    referer: str | None = None
+    links: list[PicturePushLink]
 
 
 class ConfigPayload(BaseModel):
@@ -1329,11 +1497,14 @@ def retry_job(job_id: str):
         if source_job.get("status") not in {"failed", "cancelled"}:
             raise HTTPException(status_code=400, detail="当前任务状态不支持重试")
         payload = dict(source_job.get("request_payload") or {})
-        if not payload.get("url"):
-            raise HTTPException(status_code=400, detail="原始任务缺少重试参数")
         source_job["retry_scheduled"] = False
 
-    new_job = create_download_job(DownloadPayload(**payload, wecom_to_user=source_job.get("wecom_to_user")), retry_of=job_id)
+    if payload.get("kind") == "picture_push":
+        new_job = create_picture_push_job(PicturePushPayload(**payload), retry_of=job_id)
+    else:
+        if not payload.get("url"):
+            raise HTTPException(status_code=400, detail="原始任务缺少重试参数")
+        new_job = create_download_job(DownloadPayload(**payload, wecom_to_user=source_job.get("wecom_to_user")), retry_of=job_id)
     update_job(
         job_id,
         status="retried",
@@ -1349,6 +1520,18 @@ def retry_job(job_id: str):
 @app.post("/api/download")
 async def download(request: Request, payload: DownloadPayload):
     return await run_in_executor(parse_executor, create_download_job, payload)
+
+
+@app.post("/api/picture/push")
+async def picture_push(request: Request, payload: PicturePushPayload):
+    authorize_mt_request(request)
+    job = await run_in_executor(parse_executor, create_picture_push_job, payload)
+    return {
+        "ok": True,
+        "job": job,
+        "accepted": len(job.get("image_urls") or []),
+        "download_dir": f"picture/{job.get('picture_subdir')}",
+    }
 
 
 @app.post("/api/download/all")

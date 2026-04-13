@@ -146,6 +146,62 @@ docker run -d \
 http://你的机器IP:9151
 ```
 
+### 插件推图 API（新增）
+
+现在 mt 也支持一个给浏览器插件直接调用的图片接收入口：
+
+- `POST /api/picture/push`
+- 用途：接收页面扫描结果，直接把图片下载到本地
+- 目标目录：`/downloads/picture/<sanitize子目录名>/`
+- 鉴权：可选；如果配置了 `MT_API_TOKEN`，请求需带 `X-MT-Token: <token>` 或 `Authorization: Bearer <token>`
+
+请求体至少支持这些字段：
+
+```json
+{
+  "pageUrl": "https://example.com/thread/123",
+  "pageTitle": "示例帖子",
+  "pageHost": "example.com",
+  "suggestedSubdir": "thread-123",
+  "referer": "https://example.com/thread/123",
+  "links": [
+    { "url": "https://img.example.com/a.jpg", "source": "content", "width": 1200, "height": 800 }
+  ]
+}
+```
+
+说明：
+
+- 下载图片时会把 `referer` 透传成请求头
+- `links` 会自动去重
+- 返回里会给出 `job`、`accepted`、`download_dir`
+
+最小调用示例：
+
+```bash
+curl -X POST 'http://127.0.0.1:9151/api/picture/push' \
+  -H 'Content-Type: application/json' \
+  -H 'X-MT-Token: your-token' \
+  --data-raw '{
+    "pageUrl":"https://example.com/thread/123",
+    "pageTitle":"示例帖子",
+    "pageHost":"example.com",
+    "suggestedSubdir":"thread-123",
+    "referer":"https://example.com/thread/123",
+    "links":[
+      {"url":"https://httpbin.org/image/jpeg"}
+    ]
+  }'
+```
+
+如果你是本地起服务，也可以直接：
+
+```bash
+MT_API_TOKEN=your-token uvicorn app:app --host 0.0.0.0 --port 8080
+```
+
+如果你是容器方式，记得把 `MT_API_TOKEN` 带进去。
+
 ### docker-compose
 
 仓库内置 `docker-compose.yml` 已按发布态调整，默认直接拉镜像：
