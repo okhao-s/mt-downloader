@@ -49,7 +49,6 @@ COOKIES_DIR = DATA_DIR / "cookies"
 TWITTER_COOKIES_PATH = COOKIES_DIR / "twitter.cookies.txt"
 YOUTUBE_COOKIES_PATH = COOKIES_DIR / "youtube.cookies.txt"
 BILIBILI_COOKIES_PATH = COOKIES_DIR / "bilibili.cookies.txt"
-INSTAGRAM_COOKIES_PATH = COOKIES_DIR / "instagram.cookies.txt"
 DOUYIN_COOKIES_PATH = COOKIES_DIR / "douyin.cookies.txt"
 DOUYIN_FRESH_COOKIES_PATH = COOKIES_DIR / "douyin.fresh.cookies.txt"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
@@ -59,16 +58,6 @@ COOKIES_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-
-
-@app.middleware("http")
-async def add_no_store_for_shell(request: Request, call_next):
-    response = await call_next(request)
-    if request.method == "GET" and request.url.path == "/":
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
 
 jobs: list[dict] = []
 jobs_lock = threading.Lock()
@@ -369,22 +358,18 @@ def enrich_config_view(cfg: dict) -> dict:
     cfg.setdefault("xck", cfg.get("twitter_cookies_path") or str(TWITTER_COOKIES_PATH))
     cfg.setdefault("youtubeck", cfg.get("youtube_cookies_path") or str(YOUTUBE_COOKIES_PATH))
     cfg.setdefault("bilibilick", cfg.get("bilibili_cookies_path") or str(BILIBILI_COOKIES_PATH))
-    cfg.setdefault("instagramck", cfg.get("instagram_cookies_path") or str(INSTAGRAM_COOKIES_PATH))
     cfg.setdefault("douyinck", cfg.get("douyin_cookies_path") or str(DOUYIN_COOKIES_PATH))
     cfg["twitter_cookies_path"] = cfg.get("xck") or str(TWITTER_COOKIES_PATH)
     cfg["youtube_cookies_path"] = cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
     cfg["bilibili_cookies_path"] = cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
-    cfg["instagram_cookies_path"] = cfg.get("instagramck") or str(INSTAGRAM_COOKIES_PATH)
     cfg["douyin_cookies_path"] = cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
     cfg["xck_exists"] = Path(str(cfg.get("xck") or TWITTER_COOKIES_PATH)).exists()
     cfg["youtubeck_exists"] = Path(str(cfg.get("youtubeck") or YOUTUBE_COOKIES_PATH)).exists()
     cfg["bilibilick_exists"] = Path(str(cfg.get("bilibilick") or BILIBILI_COOKIES_PATH)).exists()
-    cfg["instagramck_exists"] = Path(str(cfg.get("instagramck") or INSTAGRAM_COOKIES_PATH)).exists()
     cfg["douyinck_exists"] = Path(str(cfg.get("douyinck") or DOUYIN_COOKIES_PATH)).exists()
     cfg["twitter_cookies_exists"] = cfg["xck_exists"]
     cfg["youtube_cookies_exists"] = cfg["youtubeck_exists"]
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
-    cfg["instagram_cookies_exists"] = cfg["instagramck_exists"]
     cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
     cfg["wecom_ready"] = is_wecom_ready(cfg)
     cfg["wecom_forward_enabled"] = is_wecom_forward_enabled(cfg)
@@ -659,8 +644,6 @@ def get_download_subdir(url: str | None = None, media_type: str | None = None) -
         target = base_dir / "bilibili"
     elif is_douyin_url(url):
         target = base_dir / "douyin"
-    elif is_instagram_url(url):
-        target = base_dir / "instagram"
     elif is_x_url(url):
         target = base_dir / "x"
     else:
@@ -800,7 +783,7 @@ def schedule_retry(job_id: str, delay_seconds: int):
 
 
 def should_use_site_cookies(target_url: str | None, cookies_path: str | None) -> bool:
-    return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili", "douyin", "instagram"})
+    return bool(cookies_path and Path(cookies_path).exists() and get_platform(target_url) in {"x", "youtube", "bilibili", "douyin"})
 
 
 def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, cfg: dict | None = None) -> str | None:
@@ -812,7 +795,7 @@ def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, c
 def resolve_download_mode(platform: str, stream_url: str | None, media_type: str = "video") -> str:
     if media_type == "image":
         return "image"
-    if platform in {"youtube", "bilibili", "x", "instagram"}:
+    if platform in {"youtube", "bilibili", "x"}:
         return "ytdlp"
     if platform == "douyin":
         if stream_url and not is_m3u8_url(stream_url):
@@ -875,12 +858,10 @@ class ConfigPayload(BaseModel):
     xck: str | None = str(TWITTER_COOKIES_PATH)
     youtubeck: str | None = str(YOUTUBE_COOKIES_PATH)
     bilibilick: str | None = str(BILIBILI_COOKIES_PATH)
-    instagramck: str | None = str(INSTAGRAM_COOKIES_PATH)
     douyinck: str | None = str(DOUYIN_COOKIES_PATH)
     twitter_cookies_path: str | None = None
     youtube_cookies_path: str | None = None
     bilibili_cookies_path: str | None = None
-    instagram_cookies_path: str | None = None
     douyin_cookies_path: str | None = None
     wecom_enabled: bool = False
     wecom_corp_id: str | None = ""
@@ -930,10 +911,6 @@ def is_douyin_url(url: str | None) -> bool:
     return get_platform(url) == "douyin"
 
 
-def is_instagram_url(url: str | None) -> bool:
-    return get_platform(url) == "instagram"
-
-
 def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
     if is_x_url(url):
         return cfg.get('xck') or cfg.get('twitter_cookies_path') or str(TWITTER_COOKIES_PATH)
@@ -941,8 +918,6 @@ def resolve_site_cookies_path(url: str | None, cfg: dict) -> str | None:
         return cfg.get('youtubeck') or cfg.get('youtube_cookies_path') or str(YOUTUBE_COOKIES_PATH)
     if is_bilibili_url(url):
         return cfg.get('bilibilick') or cfg.get('bilibili_cookies_path') or str(BILIBILI_COOKIES_PATH)
-    if is_instagram_url(url):
-        return cfg.get('instagramck') or cfg.get('instagram_cookies_path') or str(INSTAGRAM_COOKIES_PATH)
     if is_douyin_url(url):
         configured = cfg.get('douyinck') or cfg.get('douyin_cookies_path') or str(DOUYIN_COOKIES_PATH)
         fresh_path = DOUYIN_FRESH_COOKIES_PATH
@@ -1235,19 +1210,15 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     selected_media_entry = None
     if payload.media_index is not None and 0 <= payload.media_index < len(media_entries):
         selected_media_entry = media_entries[payload.media_index]
-        entry_media_type = str(selected_media_entry.get("media_type") or "").strip().lower()
-        if entry_media_type in {"image", "video"}:
-            media_type = entry_media_type
     download_dir = get_download_subdir(input_url, media_type=media_type)
     stream_url = payload.stream_url or choose_stream_url(selected_media_entry or info, payload.stream_url, payload.stream_index)
-    image_urls = (selected_media_entry.get("images") or []) if selected_media_entry and media_type == "image" else (info.get("images") or [])
+    image_urls = info.get("images") or []
     extractor = str(info.get("extractor") or "")
     platform = get_platform(input_url)
     x_url = platform == "x"
     youtube_url = platform == "youtube"
     bilibili_url = platform == "bilibili"
-    instagram_url = platform == "instagram"
-    use_ytdlp_fallback = (not stream_url and x_url and media_type != "image") or youtube_url or bilibili_url or instagram_url or platform == "douyin"
+    use_ytdlp_fallback = (not stream_url and x_url and media_type != "image") or youtube_url or bilibili_url or platform == "douyin"
     if media_type == "image":
         if not image_urls:
             raise HTTPException(status_code=404, detail="未解析到可下载图片")
@@ -1414,24 +1385,8 @@ async def download_all(request: Request, payload: BatchDownloadPayload):
     media_entries = info.get("media_entries") or []
     base_title = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
 
-    if platform in {"x", "instagram"} and media_entries:
+    if platform == "x" and media_entries:
         for media_index, media_entry in enumerate(media_entries):
-            media_type = str(media_entry.get("media_type") or "video")
-            if media_type == "image":
-                media_images = media_entry.get("images") or []
-                if not media_images:
-                    continue
-                job_payload = DownloadPayload(
-                    url=payload.url,
-                    output=base_title,
-                    referer=payload.referer,
-                    user_agent=payload.user_agent,
-                    proxy=payload.proxy,
-                    media_index=media_index,
-                )
-                jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
-                continue
-
             best_stream = media_entry.get("best_stream_url") or choose_stream_url(media_entry)
             if not best_stream:
                 continue
@@ -1449,7 +1404,7 @@ async def download_all(request: Request, payload: BatchDownloadPayload):
             )
             jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
         if not jobs_created:
-            raise HTTPException(status_code=404, detail="未解析到可下载媒体")
+            raise HTTPException(status_code=404, detail="未解析到可下载视频")
         return {"ok": True, "title": info.get("title") or base_title, "stream_count": len(jobs_created), "jobs": jobs_created}
 
     for index, stream in enumerate(streams):
@@ -1629,12 +1584,10 @@ def set_config(payload: ConfigPayload):
     cfg["xck"] = payload.xck or payload.twitter_cookies_path or cfg.get("xck") or str(TWITTER_COOKIES_PATH)
     cfg["youtubeck"] = payload.youtubeck or payload.youtube_cookies_path or cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
     cfg["bilibilick"] = payload.bilibilick or payload.bilibili_cookies_path or cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
-    cfg["instagramck"] = payload.instagramck or payload.instagram_cookies_path or cfg.get("instagramck") or str(INSTAGRAM_COOKIES_PATH)
     cfg["douyinck"] = payload.douyinck or payload.douyin_cookies_path or cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
     cfg["twitter_cookies_path"] = cfg["xck"]
     cfg["youtube_cookies_path"] = cfg["youtubeck"]
     cfg["bilibili_cookies_path"] = cfg["bilibilick"]
-    cfg["instagram_cookies_path"] = cfg["instagramck"]
     cfg["douyin_cookies_path"] = cfg["douyinck"]
     cfg["wecom_enabled"] = bool(payload.wecom_enabled)
     cfg["wecom_corp_id"] = str(payload.wecom_corp_id or "").strip()
@@ -1717,8 +1670,3 @@ async def upload_youtube_cookies(file: UploadFile = File(...)):
 @app.post("/api/upload/bilibili-cookies")
 async def upload_bilibili_cookies(file: UploadFile = File(...)):
     return await save_uploaded_cookie_file(file, BILIBILI_COOKIES_PATH, "bilibili_cookies_path", "bilibili_cookies_exists")
-
-
-@app.post("/api/upload/instagram-cookies")
-async def upload_instagram_cookies(file: UploadFile = File(...)):
-    return await save_uploaded_cookie_file(file, INSTAGRAM_COOKIES_PATH, "instagram_cookies_path", "instagram_cookies_exists")
