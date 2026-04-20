@@ -1389,7 +1389,11 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
     if payload.media_index is not None and 0 <= payload.media_index < len(media_entries):
         selected_media_entry = media_entries[payload.media_index]
     download_dir = get_download_subdir(input_url, media_type=media_type)
-    stream_url = payload.stream_url or choose_stream_url(selected_media_entry or info, payload.stream_url, payload.stream_index)
+    # 当指定了 media_index 且有 media_entries 时，优先从 media_entry 取 best_stream_url
+    if selected_media_entry and payload.stream_url is None:
+        stream_url = selected_media_entry.get("best_stream_url")
+    else:
+        stream_url = payload.stream_url or choose_stream_url(selected_media_entry or info, payload.stream_url, payload.stream_index)
     image_urls = info.get("images") or []
     extractor = str(info.get("extractor") or "")
     platform = get_platform(input_url)
@@ -1430,6 +1434,11 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         base_name = info.get("title") or f"x-video-{uuid4().hex[:8]}"
         output_name = allocate_output_name(build_video_output_name(base_name, payload.media_index, len(media_entries) or 1), download_dir=download_dir)
         output_path = download_dir / output_name
+    # 如果 stream_url 仍然为空（media_entry 没有 best_stream_url），尝试从 media_entry.streams 取第一个
+    if not stream_url and selected_media_entry:
+        entry_streams = selected_media_entry.get("streams") or []
+        if entry_streams:
+            stream_url = entry_streams[0]
 
     now = iso_now()
     job = {
