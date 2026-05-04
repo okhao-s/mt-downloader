@@ -389,6 +389,9 @@ def enrich_config_view(cfg: dict) -> dict:
     cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
     cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
     cfg["wecom_forward_token_masked"] = mask_secret(cfg.get("wecom_forward_token"))
+    cfg["telegram_api_hash_masked"] = mask_secret(cfg.get("telegram_api_hash"))
+    cfg["telegram_session_exists"] = Path(str(cfg.get("telegram_session_path") or "/app/data/telegram/telegram.session")).exists()
+    cfg["telegram_ready"] = bool(cfg.get("telegram_enabled") and cfg.get("telegram_api_id") and cfg.get("telegram_api_hash"))
     return cfg
 
 
@@ -1804,6 +1807,13 @@ def set_config(payload: ConfigPayload):
     cfg["youtubeck"] = payload.youtubeck or payload.youtube_cookies_path or cfg.get("youtubeck") or str(YOUTUBE_COOKIES_PATH)
     cfg["bilibilick"] = payload.bilibilick or payload.bilibili_cookies_path or cfg.get("bilibilick") or str(BILIBILI_COOKIES_PATH)
     cfg["douyinck"] = payload.douyinck or payload.douyin_cookies_path or cfg.get("douyinck") or str(DOUYIN_COOKIES_PATH)
+    cfg["telegram_enabled"] = bool(payload.telegram_enabled)
+    cfg["telegram_api_id"] = str(payload.telegram_api_id or "").strip()
+    cfg["telegram_phone"] = str(payload.telegram_phone or "").strip()
+    cfg["telegram_session_path"] = str(payload.telegram_session_path or "/app/data/telegram/telegram.session").strip() or "/app/data/telegram/telegram.session"
+    telegram_api_hash = str(payload.telegram_api_hash or "").strip()
+    if telegram_api_hash != CONFIG_KEEP_SENTINEL:
+        cfg["telegram_api_hash"] = telegram_api_hash
     cfg["twitter_cookies_path"] = cfg["xck"]
     cfg["youtube_cookies_path"] = cfg["youtubeck"]
     cfg["bilibili_cookies_path"] = cfg["bilibilick"]

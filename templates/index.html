@@ -188,6 +188,36 @@
             <small id="bilibili-cookies-hint" class="field-hint">未上传 cookies，Bilibili 可能会返回 412 或拿不到视频流。</small>
           </label>
 
+          <div class="settings-section-title field-wide">Telegram 登录态（预配置）</div>
+
+          <label class="field field-wide">
+            <span>启用 Telegram 登录态</span>
+            <input id="cfg_telegram_enabled" type="checkbox">
+            <small id="telegram-status-hint" class="field-hint">Telegram 配置未完成。先填 API ID / API Hash / 手机号后保存。</small>
+          </label>
+
+          <label class="field">
+            <span>API ID</span>
+            <input id="cfg_telegram_api_id" placeholder="12345678">
+          </label>
+
+          <label class="field">
+            <span>手机号</span>
+            <input id="cfg_telegram_phone" placeholder="+8613812345678">
+          </label>
+
+          <label class="field field-wide">
+            <span>API Hash</span>
+            <input id="cfg_telegram_api_hash" type="password" placeholder="保存时写入；留空并保存可清空">
+            <small id="telegram-api-hash-hint" class="field-hint">未保存。API Hash 只在保存时写入，接口返回会做掩码。</small>
+          </label>
+
+          <label class="field field-wide">
+            <span>Session 文件路径</span>
+            <input id="cfg_telegram_session_path" placeholder="/app/data/telegram/telegram.session">
+            <small class="field-hint">后续登录成功后会在这里落 session 文件。</small>
+          </label>
+
           <div class="settings-section-title field-wide">企业微信接入</div>
 
           <label class="field field-wide">

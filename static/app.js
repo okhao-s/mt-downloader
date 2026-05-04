@@ -251,6 +251,18 @@ function updateWecomHints(data = {}) {
       ? `已保存：${data.wecom_forward_token_masked}。留空并保存可清空。`
       : '未保存。转发 Token 只在保存时写入，接口返回会做掩码。';
   }
+  const telegramHashHint = $('telegram-api-hash-hint');
+  if (telegramHashHint) {
+    telegramHashHint.textContent = data?.telegram_api_hash_masked
+      ? `已保存：${data.telegram_api_hash_masked}。留空并保存可清空。`
+      : '未保存。API Hash 只在保存时写入，接口返回会做掩码。';
+  }
+  const telegramStatusHint = $('telegram-status-hint');
+  if (telegramStatusHint) {
+    telegramStatusHint.textContent = data?.telegram_ready
+      ? `Telegram 配置已就绪${data?.telegram_session_exists ? '，已检测到 session 文件。' : '，待你后续完成登录生成 session。'}`
+      : 'Telegram 配置未完成。先填 API ID / API Hash / 手机号后保存。';
+  }
 }
 
 function applyConfigToForm(data = {}) {
@@ -266,6 +278,21 @@ function applyConfigToForm(data = {}) {
   }
   if ($('cfg_bilibilick')) {
     $('cfg_bilibilick').value = data?.bilibilick || data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
+  }
+  if ($('cfg_telegram_enabled')) {
+    $('cfg_telegram_enabled').checked = Boolean(data?.telegram_enabled);
+  }
+  if ($('cfg_telegram_api_id')) {
+    $('cfg_telegram_api_id').value = data?.telegram_api_id || '';
+  }
+  if ($('cfg_telegram_api_hash')) {
+    $('cfg_telegram_api_hash').value = '';
+  }
+  if ($('cfg_telegram_phone')) {
+    $('cfg_telegram_phone').value = data?.telegram_phone || '';
+  }
+  if ($('cfg_telegram_session_path')) {
+    $('cfg_telegram_session_path').value = data?.telegram_session_path || '/app/data/telegram/telegram.session';
   }
   if ($('cfg_wecom_enabled')) {
     $('cfg_wecom_enabled').checked = Boolean(data?.wecom_enabled);
@@ -649,6 +676,7 @@ async function saveConfig() {
     const wecomTokenInput = $('cfg_wecom_token')?.value.trim();
     const wecomAesInput = $('cfg_wecom_encoding_aes_key')?.value.trim();
     const wecomForwardTokenInput = $('cfg_wecom_forward_token')?.value.trim();
+    const telegramApiHashInput = $('cfg_telegram_api_hash')?.value.trim();
     const data = await api('/api/config', {
       default_proxy: $('cfg_proxy').value.trim(),
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
@@ -657,6 +685,11 @@ async function saveConfig() {
       xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
       bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
+      telegram_enabled: Boolean($('cfg_telegram_enabled')?.checked),
+      telegram_api_id: $('cfg_telegram_api_id')?.value.trim() || '',
+      telegram_api_hash: telegramApiHashInput === '' ? '__KEEP__' : telegramApiHashInput,
+      telegram_phone: $('cfg_telegram_phone')?.value.trim() || '',
+      telegram_session_path: $('cfg_telegram_session_path')?.value.trim() || '/app/data/telegram/telegram.session',
       wecom_enabled: Boolean($('cfg_wecom_enabled')?.checked),
       wecom_corp_id: $('cfg_wecom_corp_id')?.value.trim() || '',
       wecom_agent_id: $('cfg_wecom_agent_id')?.value.trim() || '',

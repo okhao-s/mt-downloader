@@ -47,6 +47,11 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg["wecom_enabled"] = bool(cfg.get("wecom_enabled", False))
     cfg["wecom_corp_id"] = str(cfg.get("wecom_corp_id") or "")
     cfg["wecom_agent_id"] = str(cfg.get("wecom_agent_id") or "")
+    cfg["telegram_api_id"] = str(cfg.get("telegram_api_id") or "")
+    cfg["telegram_api_hash"] = str(cfg.get("telegram_api_hash") or "")
+    cfg["telegram_phone"] = str(cfg.get("telegram_phone") or "")
+    cfg["telegram_session_path"] = str(cfg.get("telegram_session_path") or "/app/data/telegram/telegram.session")
+    cfg["telegram_enabled"] = bool(cfg.get("telegram_enabled"))
     cfg["wecom_secret"] = str(cfg.get("wecom_secret") or "")
     cfg["wecom_token"] = str(cfg.get("wecom_token") or "")
     cfg["wecom_encoding_aes_key"] = str(cfg.get("wecom_encoding_aes_key") or "")
@@ -69,6 +74,11 @@ def load_config() -> dict:
         "youtubeck": "/app/data/cookies/youtube.cookies.txt",
         "bilibilick": "/app/data/cookies/bilibili.cookies.txt",
         "douyinck": "/app/data/cookies/douyin.cookies.txt",
+        "telegram_api_id": "",
+        "telegram_api_hash": "",
+        "telegram_phone": "",
+        "telegram_session_path": "/app/data/telegram/telegram.session",
+        "telegram_enabled": False,
         "wecom_enabled": False,
         "wecom_corp_id": "",
         "wecom_agent_id": "",
