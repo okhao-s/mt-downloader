@@ -555,6 +555,83 @@ def notify_wecom_job_failed(job: dict):
     notify_wecom_job_status(job, "failed", build_wecom_job_failed_feedback)
 
 
+def create_download_jobs_for_payload(payload: DownloadPayload) -> list[dict]:
+    input_url = normalize_input_url(payload.url)
+    if not input_url:
+        raise HTTPException(status_code=400, detail="请提供有效链接")
+
+    cfg = load_config()
+    proxy = resolve_request_proxy(input_url, payload.proxy, cfg)
+    cookies_path = resolve_site_cookies_path(input_url, cfg)
+    info = discover_stream(
+        input_url,
+        payload.referer,
+        payload.user_agent,
+        proxy,
+        payload.stream_url,
+        payload.stream_index,
+        cookies_path,
+    )
+    streams = info.get("streams") or []
+    images = info.get("images") or []
+    if not streams and not images:
+        raise HTTPException(status_code=404, detail="未解析到可下载媒体")
+
+    if info.get("media_type") == "image":
+        image_payload = DownloadPayload(
+            url=input_url,
+            output=payload.output or info.get("title") or f"x-image-{uuid4().hex[:8]}",
+            referer=payload.referer,
+            user_agent=payload.user_agent,
+            proxy=payload.proxy,
+            wecom_to_user=payload.wecom_to_user,
+        )
+        return [create_download_job(image_payload)]
+
+    platform = get_platform(input_url)
+    jobs_created: list[dict] = []
+    media_entries = info.get("media_entries") or []
+    base_title = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
+
+    if platform == "x" and media_entries:
+        for media_index, media_entry in enumerate(media_entries):
+            best_stream = media_entry.get("best_stream_url") or choose_stream_url(media_entry)
+            if not best_stream:
+                continue
+            entry_streams = media_entry.get("streams") or []
+            best_index = next((i for i, s in enumerate(entry_streams) if s == best_stream), 0)
+            job_payload = DownloadPayload(
+                url=input_url,
+                output=base_title,
+                referer=payload.referer,
+                user_agent=payload.user_agent,
+                proxy=payload.proxy,
+                stream_url=best_stream,
+                stream_index=best_index,
+                media_index=media_index,
+                wecom_to_user=payload.wecom_to_user,
+            )
+            jobs_created.append(create_download_job(job_payload))
+        if not jobs_created:
+            raise HTTPException(status_code=404, detail="未解析到可下载视频")
+        return jobs_created
+
+    for index, stream in enumerate(streams):
+        suffix_name = f"{base_title} - {index + 1}" if len(streams) > 1 else base_title
+        job_payload = DownloadPayload(
+            url=input_url,
+            output=suffix_name,
+            referer=payload.referer,
+            user_agent=payload.user_agent,
+            proxy=payload.proxy,
+            stream_url=stream,
+            stream_index=index,
+            wecom_to_user=payload.wecom_to_user,
+        )
+        jobs_created.append(create_download_job(job_payload))
+    return jobs_created
+
+
 def handle_wecom_download_message(msg: dict):
     from_user = str(msg.get("FromUserName") or "").strip()
     content = str(msg.get("Content") or "").strip()
@@ -566,8 +643,7 @@ def handle_wecom_download_message(msg: dict):
         return
     platform = get_platform(url)
     try:
-        payload = DownloadPayload(url=url, wecom_to_user=from_user)
-        create_download_job(payload)
+        create_download_jobs_for_payload(DownloadPayload(url=url, wecom_to_user=from_user))
     except Exception as exc:
         send_wecom_text_async(from_user, f"{build_wecom_prefix(platform)} 任务创建失败：{exc}")
 
@@ -1549,79 +1625,20 @@ async def picture_push(request: Request, payload: PicturePushPayload):
 
 @app.post("/api/download/all")
 async def download_all(request: Request, payload: BatchDownloadPayload):
-    cfg = load_config()
-    input_url = normalize_input_url(payload.url)
-    proxy = resolve_request_proxy(input_url, payload.proxy, cfg)
-    if not input_url:
-        raise HTTPException(status_code=400, detail="请提供有效链接")
-    cookies_path = resolve_site_cookies_path(input_url, cfg)
-    info = await run_in_executor(
-        parse_executor,
-        discover_stream,
-        input_url,
-        payload.referer,
-        payload.user_agent,
-        proxy,
-        payload.stream_url,
-        payload.stream_index,
-        cookies_path,
+    job_payload = DownloadPayload(
+        url=payload.url,
+        output=payload.output,
+        referer=payload.referer,
+        user_agent=payload.user_agent,
+        proxy=payload.proxy,
+        stream_url=payload.stream_url,
+        stream_index=payload.stream_index,
     )
-    streams = info.get("streams") or []
-    images = info.get("images") or []
-    if not streams and not images:
-        raise HTTPException(status_code=404, detail="未解析到可下载媒体")
-
-    platform = get_platform(payload.url)
-    if info.get("media_type") == "image":
-        job_payload = DownloadPayload(
-            url=payload.url,
-            output=payload.output or info.get("title") or f"x-image-{uuid4().hex[:8]}",
-            referer=payload.referer,
-            user_agent=payload.user_agent,
-            proxy=payload.proxy,
-        )
-        job = await run_in_executor(parse_executor, create_download_job, job_payload)
-        return {"ok": True, "title": info.get("title") or job_payload.output, "stream_count": 0, "image_count": len(images), "jobs": [job]}
-
-    jobs_created = []
-    media_entries = info.get("media_entries") or []
-    base_title = payload.output or info.get("title") or f"video-{uuid4().hex[:8]}"
-
-    if platform == "x" and media_entries:
-        for media_index, media_entry in enumerate(media_entries):
-            best_stream = media_entry.get("best_stream_url") or choose_stream_url(media_entry)
-            if not best_stream:
-                continue
-            entry_streams = media_entry.get("streams") or []
-            best_index = next((i for i, s in enumerate(entry_streams) if s == best_stream), 0)
-            job_payload = DownloadPayload(
-                url=payload.url,
-                output=base_title,
-                referer=payload.referer,
-                user_agent=payload.user_agent,
-                proxy=payload.proxy,
-                stream_url=best_stream,
-                stream_index=best_index,
-                media_index=media_index,
-            )
-            jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
-        if not jobs_created:
-            raise HTTPException(status_code=404, detail="未解析到可下载视频")
-        return {"ok": True, "title": info.get("title") or base_title, "stream_count": len(jobs_created), "jobs": jobs_created}
-
-    for index, stream in enumerate(streams):
-        suffix_name = f"{base_title} - {index + 1}" if len(streams) > 1 else base_title
-        job_payload = DownloadPayload(
-            url=payload.url,
-            output=suffix_name,
-            referer=payload.referer,
-            user_agent=payload.user_agent,
-            proxy=payload.proxy,
-            stream_url=stream,
-            stream_index=index,
-        )
-        jobs_created.append(await run_in_executor(parse_executor, create_download_job, job_payload))
-    return {"ok": True, "title": info.get("title") or base_title, "stream_count": len(streams), "jobs": jobs_created}
+    jobs_created = await run_in_executor(parse_executor, create_download_jobs_for_payload, job_payload)
+    first_job = jobs_created[0] if jobs_created else {}
+    title = first_job.get("title") or payload.output or f"video-{uuid4().hex[:8]}"
+    image_count = sum(int(job.get("image_count") or 0) for job in jobs_created)
+    return {"ok": True, "title": title, "stream_count": len(jobs_created) if image_count == 0 else 0, "image_count": image_count, "jobs": jobs_created}
 
 
 @app.get("/api/jobs")
