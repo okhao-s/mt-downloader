@@ -218,6 +218,27 @@
             <small class="field-hint">后续登录成功后会在这里落 session 文件。</small>
           </label>
 
+          <label class="field">
+            <span>验证码</span>
+            <input id="cfg_telegram_code" placeholder="12345">
+          </label>
+
+          <label class="field">
+            <span>phone_code_hash</span>
+            <input id="cfg_telegram_phone_code_hash" placeholder="发验证码后自动回填">
+          </label>
+
+          <label class="field field-wide">
+            <span>两步验证密码（如有）</span>
+            <input id="cfg_telegram_password" type="password" placeholder="仅在账号开启 2FA 时填写">
+          </label>
+
+          <div class="action-row">
+            <button class="btn btn-inline" type="button" onclick="telegramCheckStatus()">检查 Telegram 状态</button>
+            <button class="btn btn-inline" type="button" onclick="telegramSendCode()">发送验证码</button>
+            <button class="btn btn-inline" type="button" onclick="telegramSignIn()">完成登录</button>
+          </div>
+
           <div class="settings-section-title field-wide">企业微信接入</div>
 
           <label class="field field-wide">

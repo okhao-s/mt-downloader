@@ -26,10 +26,12 @@ RUN pip install --no-cache-dir \
         websockets \
         jinja2 \
         python-multipart \
-        pycryptodome
+        pycryptodome \
+        telethon \
+        socksio
 
 WORKDIR /app
-COPY app.py core.py wecom.py download.py entrypoint.sh /app/
+COPY app.py core.py wecom.py telegram_client.py download.py entrypoint.sh /app/
 COPY static /app/static
 COPY templates /app/templates
 RUN chmod +x /app/entrypoint.sh

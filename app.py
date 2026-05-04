@@ -40,6 +40,7 @@ from core import (
     should_hint_bilibili_cookies,
 )
 from wecom import WeComClient, WeComCrypto, build_passive_text_reply
+from telegram_client import telegram_probe_session, telegram_send_code, telegram_sign_in
 
 app = FastAPI(title="M3U8 Downloader")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -60,11 +61,13 @@ YOUTUBE_COOKIES_PATH = COOKIES_DIR / "youtube.cookies.txt"
 BILIBILI_COOKIES_PATH = COOKIES_DIR / "bilibili.cookies.txt"
 DOUYIN_COOKIES_PATH = COOKIES_DIR / "douyin.cookies.txt"
 DOUYIN_FRESH_COOKIES_PATH = COOKIES_DIR / "douyin.fresh.cookies.txt"
+TELEGRAM_DATA_DIR = DATA_DIR / "telegram"
 INTERNAL_BASE_URL = os.getenv("INTERNAL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 MT_API_TOKEN = os.getenv("MT_API_TOKEN", "").strip()
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+TELEGRAM_DATA_DIR.mkdir(parents=True, exist_ok=True)
 PICTURE_ROOT_DIR = DOWNLOAD_DIR / "photo"
 PICTURE_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1107,6 +1110,23 @@ class PicturePushPayload(BaseModel):
     links: list[PicturePushLink]
 
 
+class TelegramCodePayload(BaseModel):
+    api_id: str
+    api_hash: str
+    phone: str
+    session_path: str | None = "/app/data/telegram/telegram.session"
+
+
+class TelegramSignInPayload(BaseModel):
+    api_id: str
+    api_hash: str
+    phone: str
+    code: str
+    phone_code_hash: str | None = None
+    password: str | None = None
+    session_path: str | None = "/app/data/telegram/telegram.session"
+
+
 class ConfigPayload(BaseModel):
     default_proxy: str | None = ""
     auto_retry_enabled: bool = False
@@ -1784,6 +1804,43 @@ async def media_proxy(name: str = "", target: str = "", referer: str | None = No
         headers=headers,
         status_code=response.status_code,
     )
+
+
+@app.get("/api/telegram/status")
+async def telegram_status():
+    cfg = load_config()
+    api_id = str(cfg.get("telegram_api_id") or "").strip()
+    api_hash = str(cfg.get("telegram_api_hash") or "").strip()
+    session_path = str(cfg.get("telegram_session_path") or "/app/data/telegram/telegram.session").strip() or "/app/data/telegram/telegram.session"
+    if not api_id or not api_hash:
+        return {"ok": True, "authorized": False, "configured": False, "session_path": session_path}
+    try:
+        result = await telegram_probe_session(api_id, api_hash, session_path)
+        result["configured"] = True
+        return result
+    except Exception as exc:
+        return {"ok": False, "configured": True, "authorized": False, "session_path": session_path, "error": str(exc)}
+
+
+@app.post("/api/telegram/send-code")
+async def telegram_send_login_code(payload: TelegramCodePayload):
+    try:
+        return await telegram_send_code(payload.api_id, payload.api_hash, payload.session_path or "/app/data/telegram/telegram.session", payload.phone)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Telegram 发送验证码失败：{exc}")
+
+
+@app.post("/api/telegram/sign-in")
+async def telegram_finish_sign_in(payload: TelegramSignInPayload):
+    try:
+        result = await telegram_sign_in(payload.api_id, payload.api_hash, payload.session_path or "/app/data/telegram/telegram.session", payload.phone, payload.code, payload.phone_code_hash, payload.password)
+        if result.get("ok") is False and result.get("need_password"):
+            raise HTTPException(status_code=409, detail="需要 Telegram 两步验证密码")
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Telegram 登录失败：{exc}")
 
 
 @app.get("/api/config")

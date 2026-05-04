@@ -1247,3 +1247,58 @@ window.addEventListener('load', async () => {
   } catch (_) {}
   refreshJobs().catch(() => {});
 });
+
+
+async function telegramCheckStatus() {
+  try {
+    const res = await fetch('/api/telegram/status', { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
+    const summary = data?.authorized
+      ? `Telegram 已登录：${data?.user?.first_name || data?.user?.username || data?.user?.phone || 'unknown'}`
+      : (data?.configured ? 'Telegram 未登录，需发送验证码完成登录。' : 'Telegram 尚未配置完整。');
+    setStatus(summary, data?.authorized ? 'success' : 'info');
+    await loadConfig();
+  } catch (e) {
+    setStatus(`Telegram 状态检查失败：${e.message}`, 'error');
+  }
+}
+
+async function telegramSendCode() {
+  try {
+    const payload = {
+      api_id: $('cfg_telegram_api_id')?.value.trim() || '',
+      api_hash: $('cfg_telegram_api_hash')?.value.trim() || '',
+      phone: $('cfg_telegram_phone')?.value.trim() || '',
+      session_path: $('cfg_telegram_session_path')?.value.trim() || '/app/data/telegram/telegram.session',
+    };
+    const data = await api('/api/telegram/send-code', payload, 45000);
+    if ($('cfg_telegram_phone_code_hash')) $('cfg_telegram_phone_code_hash').value = data?.phone_code_hash || '';
+    setStatus('Telegram 验证码已发送，填验证码后点“完成登录”。', 'success');
+  } catch (e) {
+    setStatus(`Telegram 发码失败：${e.message}`, 'error');
+  }
+}
+
+async function telegramSignIn() {
+  try {
+    const payload = {
+      api_id: $('cfg_telegram_api_id')?.value.trim() || '',
+      api_hash: $('cfg_telegram_api_hash')?.value.trim() || '',
+      phone: $('cfg_telegram_phone')?.value.trim() || '',
+      code: $('cfg_telegram_code')?.value.trim() || '',
+      phone_code_hash: $('cfg_telegram_phone_code_hash')?.value.trim() || '',
+      password: $('cfg_telegram_password')?.value.trim() || '',
+      session_path: $('cfg_telegram_session_path')?.value.trim() || '/app/data/telegram/telegram.session',
+    };
+    const data = await api('/api/telegram/sign-in', payload, 45000);
+    setStatus(`Telegram 登录成功：${data?.user?.first_name || data?.user?.username || data?.user?.phone || 'unknown'}`, 'success');
+    await loadConfig();
+  } catch (e) {
+    setStatus(`Telegram 登录失败：${e.message}`, 'error');
+  }
+}
+
+window.telegramCheckStatus = telegramCheckStatus;
+window.telegramSendCode = telegramSendCode;
+window.telegramSignIn = telegramSignIn;
