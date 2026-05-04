@@ -150,6 +150,8 @@ def detect_platform(url: Optional[str]) -> str:
         "cdninstagram.com/",
     ]):
         return "instagram"
+    if "t.me/" in value or "telegram.me/" in value:
+        return "telegram"
     if any(token in value for token in [
         "douyin.com/",
         "iesdouyin.com/",
@@ -377,6 +379,76 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
     if proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout
     return html
+
+
+def extract_telegram_public_media(html: str, page_url: str | None = None) -> tuple[list[str], list[dict], list[str], list[dict], str | None, str | None]:
+    streams: list[str] = []
+    images: list[str] = []
+    title: str | None = extract_title_from_html(html)
+    thumbnail: str | None = None
+
+    def add_absolute(url: str) -> str:
+        value = str(url or '').replace('\\/', '/').strip()
+        if not value:
+            return value
+        if value.startswith('//'):
+            return 'https:' + value
+        if value.startswith('/') and page_url:
+            return urljoin(page_url, value)
+        return value
+
+    patterns = [
+        r"<video[^>]+src=[\"']([^\"']+)[\"']",
+        r"data-video=[\"']([^\"']+)[\"']",
+        r"tgme_widget_message_video_player[^>]+src=[\"']([^\"']+)[\"']",
+        r"<meta[^>]+property=[\"']og:video(?::url)?[\"'][^>]+content=[\"']([^\"']+)[\"']",
+        r"<meta[^>]+name=[\"']twitter:player:stream[\"'][^>]+content=[\"']([^\"']+)[\"']",
+    ]
+    for pat in patterns:
+        for match in re.findall(pat, html, re.IGNORECASE):
+            candidate = add_absolute(match)
+            if candidate and (is_direct_media_url(candidate) or '.mp4' in candidate or '.m3u8' in candidate):
+                streams.append(candidate)
+
+    image_patterns = [
+        r"<meta[^>]+property=[\"']og:image(?::url)?[\"'][^>]+content=[\"']([^\"']+)[\"']",
+        r"<meta[^>]+name=[\"']twitter:image(?::src)?[\"'][^>]+content=[\"']([^\"']+)[\"']",
+        r"<img[^>]+src=[\"']([^\"']+)[\"']",
+    ]
+    for pat in image_patterns:
+        for match in re.findall(pat, html, re.IGNORECASE):
+            candidate = add_absolute(match)
+            if candidate and ('telesco.pe/' in candidate or 'telegram.org/file/' in candidate or is_direct_image_url(candidate)):
+                images.append(candidate)
+                thumbnail = thumbnail or candidate
+
+    stream_options = [build_stream_option(item, source='telegram-html') for item in dedupe_keep_order(streams)]
+    image_options = [build_stream_option(item, source='telegram-html-image') for item in dedupe_keep_order(images)]
+    return dedupe_keep_order(streams), stream_options, dedupe_keep_order(images), image_options, title, thumbnail
+
+
+def try_telegram_fallback_streams(url: str, info: dict, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> tuple[list[str], list[dict], list[str], list[dict], Optional[str]]:
+    extra_streams: list[str] = []
+    extra_options: list[dict] = []
+    extra_images: list[str] = []
+    extra_image_options: list[dict] = []
+    extractor: Optional[str] = None
+    try:
+        html = fetch_webpage_html(url, referer, user_agent, proxy)
+        tg_streams, tg_options, tg_images, tg_image_options, tg_title, tg_thumbnail = extract_telegram_public_media(html, url)
+        if tg_streams or tg_images:
+            extra_streams.extend(tg_streams)
+            extra_options.extend(tg_options)
+            extra_images.extend(tg_images)
+            extra_image_options.extend(tg_image_options)
+            if tg_title and not info.get('title'):
+                info['title'] = tg_title
+            if tg_thumbnail and not info.get('thumbnail'):
+                info['thumbnail'] = tg_thumbnail
+            extractor = 'telegram-html'
+    except Exception as exc:
+        info['errors'].append(f'telegram-html fallback 失败：{exc}')
+    return extra_streams, extra_options, extra_images, extra_image_options, extractor
 
 
 def extract_twitter_fallback_streams(html: str) -> list[str]:
@@ -1241,6 +1313,12 @@ def extract_platform_streams(platform: str, meta: dict) -> tuple[list[str], list
     if platform == "instagram":
         _, _, media_entries = extract_instagram_images(meta)
         return [], [], media_entries
+    if platform == "telegram":
+        streams, options = extract_generic_ytdlp_streams(meta)
+        if isinstance(direct, str) and direct and direct not in streams and (is_direct_media_url(direct) or '.mp4' in direct or '.m3u8' in direct):
+            streams.append(direct)
+            options.append(build_stream_option(direct, meta, source="yt-dlp-telegram-direct"))
+        return dedupe_keep_order(streams), dedupe_stream_options(options), []
     streams, options = extract_generic_ytdlp_streams(meta)
     return streams, options, []
 
@@ -1478,6 +1556,21 @@ def _discover_stream_uncached(
                 info['extractor'] = 'instagram-html'
         except Exception as exc:
             info['errors'].append(f'instagram-html fallback 失败：{exc}')
+
+    if platform == "telegram" and not extra_streams and not extra_images:
+        fallback_streams, fallback_options, fallback_images, fallback_image_options, fallback_extractor = try_telegram_fallback_streams(
+            url,
+            info,
+            referer,
+            user_agent,
+            proxy,
+        )
+        extra_streams.extend(fallback_streams)
+        extra_options.extend(fallback_options)
+        extra_images.extend(fallback_images)
+        extra_image_options.extend(fallback_image_options)
+        if fallback_extractor:
+            info['extractor'] = fallback_extractor
 
     if extra_streams:
         apply_stream_results(
