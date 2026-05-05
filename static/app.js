@@ -286,7 +286,7 @@ function applyConfigToForm(data = {}) {
     $('cfg_telegram_api_id').value = data?.telegram_api_id || '';
   }
   if ($('cfg_telegram_api_hash')) {
-    $('cfg_telegram_api_hash').value = '';
+    $('cfg_telegram_api_hash').value = data?.telegram_api_hash || '';
   }
   if ($('cfg_telegram_phone')) {
     $('cfg_telegram_phone').value = data?.telegram_phone || '';
