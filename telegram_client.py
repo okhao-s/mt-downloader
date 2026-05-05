@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
+from telethon.network.connection.tcphttp import ConnectionTcphttp
 
 
 def _normalize_session_path(session_path: str) -> str:
@@ -11,12 +12,19 @@ def _normalize_session_path(session_path: str) -> str:
     return str(path)
 
 
-def _build_client(api_id: str | int, api_hash: str, session_path: str) -> TelegramClient:
-    return TelegramClient(_normalize_session_path(session_path), int(str(api_id).strip()), str(api_hash).strip())
+def _build_client(api_id: str | int, api_hash: str, session_path: str, proxy: Optional[str] = None) -> TelegramClient:
+    session = _normalize_session_path(session_path)
+    api_id = int(str(api_id).strip())
+    api_hash = str(api_hash).strip()
+    
+    if proxy:
+        # 使用 HTTP 代理连接
+        return TelegramClient(session, api_id, api_hash, connection=ConnectionTcphttp)
+    return TelegramClient(session, api_id, api_hash)
 
 
-async def telegram_probe_session(api_id: str | int, api_hash: str, session_path: str) -> dict:
-    client = _build_client(api_id, api_hash, session_path)
+async def telegram_probe_session(api_id: str | int, api_hash: str, session_path: str, proxy: Optional[str] = None) -> dict:
+    client = _build_client(api_id, api_hash, session_path, proxy)
     try:
         await client.connect()
         authorized = await client.is_user_authorized()
@@ -37,8 +45,8 @@ async def telegram_probe_session(api_id: str | int, api_hash: str, session_path:
         await client.disconnect()
 
 
-async def telegram_send_code(api_id: str | int, api_hash: str, session_path: str, phone: str) -> dict:
-    client = _build_client(api_id, api_hash, session_path)
+async def telegram_send_code(api_id: str | int, api_hash: str, session_path: str, phone: str, proxy: Optional[str] = None) -> dict:
+    client = _build_client(api_id, api_hash, session_path, proxy)
     try:
         await client.connect()
         sent = await client.send_code_request(str(phone).strip())
@@ -51,8 +59,8 @@ async def telegram_send_code(api_id: str | int, api_hash: str, session_path: str
         await client.disconnect()
 
 
-async def telegram_sign_in(api_id: str | int, api_hash: str, session_path: str, phone: str, code: str, phone_code_hash: Optional[str] = None, password: Optional[str] = None) -> dict:
-    client = _build_client(api_id, api_hash, session_path)
+async def telegram_sign_in(api_id: str | int, api_hash: str, session_path: str, phone: str, code: str, phone_code_hash: Optional[str] = None, password: Optional[str] = None, proxy: Optional[str] = None) -> dict:
+    client = _build_client(api_id, api_hash, session_path, proxy)
     try:
         await client.connect()
         try:
