@@ -56,6 +56,9 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg["wecom_token"] = str(cfg.get("wecom_token") or "")
     cfg["wecom_encoding_aes_key"] = str(cfg.get("wecom_encoding_aes_key") or "")
     cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or "")
+    cfg["http_proxy"] = str(cfg.get("http_proxy") or "")
+    cfg["https_proxy"] = str(cfg.get("https_proxy") or "")
+    cfg["no_proxy"] = str(cfg.get("no_proxy") or "")
     return cfg
 
 
