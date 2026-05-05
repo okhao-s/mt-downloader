@@ -1129,6 +1129,9 @@ class TelegramSignInPayload(BaseModel):
 
 class ConfigPayload(BaseModel):
     default_proxy: str | None = ""
+    http_proxy: str | None = ""
+    https_proxy: str | None = ""
+    no_proxy: str | None = ""
     auto_retry_enabled: bool = False
     auto_retry_delay_seconds: int = 30
     auto_retry_max_attempts: int = 2
@@ -1862,6 +1865,9 @@ async def get_version():
 def set_config(payload: ConfigPayload):
     cfg = load_config()
     cfg["default_proxy"] = payload.default_proxy or ""
+    cfg["http_proxy"] = payload.http_proxy or ""
+    cfg["https_proxy"] = payload.https_proxy or ""
+    cfg["no_proxy"] = payload.no_proxy or ""
     cfg["auto_retry_enabled"] = bool(payload.auto_retry_enabled)
     cfg["auto_retry_delay_seconds"] = max(1, int(payload.auto_retry_delay_seconds or 30))
     cfg["auto_retry_max_attempts"] = max(0, int(payload.auto_retry_max_attempts or 0))

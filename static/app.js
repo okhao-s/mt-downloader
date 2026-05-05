@@ -179,6 +179,9 @@ function showConfigSummary(data) {
   renderSummary([
     { label: '当前状态', value: '设置已保存' },
     { label: '默认代理', value: data?.default_proxy || '未设置' },
+    { label: 'HTTP 代理', value: data?.http_proxy || '未设置' },
+    { label: 'HTTPS 代理', value: data?.https_proxy || '未设置' },
+    { label: 'NO_PROXY', value: data?.no_proxy || '未设置' },
     { label: '自动重试', value: data?.auto_retry_enabled ? '已开启' : '未开启' },
     { label: '重试策略', value: `${data?.auto_retry_max_attempts ?? 2} 次 / ${data?.auto_retry_delay_seconds ?? 30}s` },
     { label: '企业微信', value: data?.wecom_ready ? '配置已就绪' : (data?.wecom_enabled ? '已开启，但参数还没填完整' : '未启用') },
@@ -267,6 +270,9 @@ function updateWecomHints(data = {}) {
 
 function applyConfigToForm(data = {}) {
   $('cfg_proxy').value = data?.default_proxy || '';
+  $('cfg_http_proxy').value = data?.http_proxy || '';
+  $('cfg_https_proxy').value = data?.https_proxy || '';
+  $('cfg_no_proxy').value = data?.no_proxy || '';
   $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
   $('cfg_auto_retry_delay_seconds').value = Number(data?.auto_retry_delay_seconds ?? 30);
   $('cfg_auto_retry_max_attempts').value = Number(data?.auto_retry_max_attempts ?? 2);
@@ -679,6 +685,9 @@ async function saveConfig() {
     const telegramApiHashInput = $('cfg_telegram_api_hash')?.value.trim();
     const data = await api('/api/config', {
       default_proxy: $('cfg_proxy').value.trim(),
+      http_proxy: $('cfg_http_proxy')?.value.trim() || '',
+      https_proxy: $('cfg_https_proxy')?.value.trim() || '',
+      no_proxy: $('cfg_no_proxy')?.value.trim() || '',
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
       auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),
       auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),

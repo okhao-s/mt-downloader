@@ -140,6 +140,23 @@
             <input id="cfg_proxy" value="{{ config.default_proxy }}">
           </label>
 
+          <div class="settings-section-title field-wide">系统代理设置（容器启动时生效）</div>
+
+          <label class="field">
+            <span>HTTP 代理</span>
+            <input id="cfg_http_proxy" value="{{ config.http_proxy or '' }}" placeholder="如 http://192.168.x.x:7890">
+          </label>
+
+          <label class="field">
+            <span>HTTPS 代理</span>
+            <input id="cfg_https_proxy" value="{{ config.https_proxy or '' }}" placeholder="如 http://192.168.x.x:7890">
+          </label>
+
+          <label class="field field-wide">
+            <span>NO_PROXY（排除列表）</span>
+            <input id="cfg_no_proxy" value="{{ config.no_proxy or '' }}" placeholder="逗号分隔，如 localhost,127.0.0.1,.internal.com">
+          </label>
+
           <label class="field">
             <span>失败后自动重试</span>
             <input id="cfg_auto_retry_enabled" type="checkbox" {% if config.auto_retry_enabled %}checked{% endif %}>
