@@ -90,7 +90,7 @@ async function api(path, payload, timeoutMs = API_TIMEOUT_MS) {
     if (!res.ok) throw new Error(data.detail || data.error || `request failed (${res.status})`);
     return data;
   } catch (e) {
-    if (e.name === 'AbortError') throw new Error(`请求超时（>${timeoutMs / 1000}s）`);
+    if (e.name === 'AbortError') throw new Error(`请求超时(>${timeoutMs / 1000}s)`);
     throw e;
   } finally {
     clearTimeout(timer);
@@ -135,11 +135,11 @@ function renderSummary(items = [], options = {}) {
 function showParseSummary(data) {
   if (data?.media_type === 'image') {
     renderSummary([
-      { label: '当前状态', value: `解析成功，共找到 ${Number(data?.image_count || (data?.images || []).length || 0)} 张图片`, success: true, highlight: true },
+      { label: '当前状态', value: `解析成功,共找到 ${Number(data?.image_count || (data?.images || []).length || 0)} 张图片`, success: true, highlight: true },
       { label: '标题', value: data?.title || '未抓到标题' },
       { label: '默认文件名前缀', value: $('output').value.trim() || '未生成' },
       { label: '下载目录', value: '/downloads/image' },
-      { label: '下一步', value: '这是图片帖，直接点开始下载就行。' },
+      { label: '下一步', value: '这是图片帖,直接点开始下载就行。' },
     ], { variant: 'success' });
     return;
   }
@@ -150,21 +150,21 @@ function showParseSummary(data) {
   const multiVideoPost = isXUrl(data?.source_url) && mediaCount > 1;
   const isSingleHighest = !multiVideoPost && (shouldCollapseToBestOnly(data?.source_url) || videoCount <= 1);
   renderSummary([
-    { label: '当前状态', value: multiVideoPost ? `解析成功，共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功，已锁定最高画质' : `解析成功，共找到 ${videoCount} 个视频`), success: true, highlight: true },
+    { label: '当前状态', value: multiVideoPost ? `解析成功,共找到 ${mediaCount} 个视频媒体` : (isSingleHighest ? '解析成功,已锁定最高画质' : `解析成功,共找到 ${videoCount} 个视频`), success: true, highlight: true },
     { label: '标题', value: data?.title || '未抓到标题' },
     { label: '默认文件名', value: $('output').value.trim() || '未生成' },
     { label: multiVideoPost ? '当前选中' : (isSingleHighest ? '当前画质' : '推荐画质'), value: multiVideoPost ? `视频 ${Number((preferredIndex ?? 0) + 1)}` : streamMetaText(preferredOption) },
-    { label: '下一步', value: multiVideoPost ? '这是多视频帖子，点上方列表选第几个视频，再预览或下载。' : (isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个，再预览或下载') },
+    { label: '下一步', value: multiVideoPost ? '这是多视频帖子,点上方列表选第几个视频,再预览或下载。' : (isSingleHighest ? '直接下载就行。' : '点上方视频列表选一个,再预览或下载') },
   ], { variant: 'success' });
 }
 
 function explainFailure(message) {
   const text = String(message || '未知错误');
-  if (/403|401|forbidden|unauthorized/i.test(text)) return '源站拒绝访问，通常要补 Referer、User-Agent 或代理。';
-  if (/timeout|超时|timed out/i.test(text)) return '超时了，优先试代理、换线路，或者直接下载别预览。';
-  if (/not found|未解析到/i.test(text)) return '这页没抠出可用 m3u8，可能不是直播放页，或者页面被风控。';
-  if (/hls|manifest|frag/i.test(text)) return 'HLS 预览链路炸了，通常还能试下载，或者换另一个视频流。';
-  return '先看原始错误；如果是站点限制，补 Referer / 代理 往往有用。';
+  if (/403|401|forbidden|unauthorized/i.test(text)) return '源站拒绝访问,通常要补 Referer、User-Agent 或代理。';
+  if (/timeout|超时|timed out/i.test(text)) return '超时了,优先试代理、换线路,或者直接下载别预览。';
+  if (/not found|未解析到/i.test(text)) return '这页没抠出可用 m3u8,可能不是直播放页,或者页面被风控。';
+  if (/hls|manifest|frag/i.test(text)) return 'HLS 预览链路炸了,通常还能试下载,或者换另一个视频流。';
+  return '先看原始错误;如果是站点限制,补 Referer / 代理 往往有用。';
 }
 
 function showPreviewErrorSummary(message, index) {
@@ -184,7 +184,7 @@ function showConfigSummary(data) {
     { label: 'NO_PROXY', value: data?.no_proxy || '未设置' },
     { label: '自动重试', value: data?.auto_retry_enabled ? '已开启' : '未开启' },
     { label: '重试策略', value: `${data?.auto_retry_max_attempts ?? 2} 次 / ${data?.auto_retry_delay_seconds ?? 30}s` },
-    { label: '企业微信', value: data?.wecom_ready ? '配置已就绪' : (data?.wecom_enabled ? '已开启，但参数还没填完整' : '未启用') },
+    { label: '企业微信', value: data?.wecom_ready ? '配置已就绪' : (data?.wecom_enabled ? '已开启,但参数还没填完整' : '未启用') },
   ]);
 }
 
@@ -193,8 +193,8 @@ function updateTwitterCookiesHint(data = {}) {
   if (!hint) return;
   const path = data?.xck || data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
   hint.textContent = data?.twitter_cookies_exists
-    ? `已检测到 cookies：${path}。X/Twitter 下载会自动带上。`
-    : `未上传 cookies，X/Twitter 先按游客模式试。建议上传浏览器导出的 cookies.txt。`;
+    ? `已检测到 cookies:${path}。X/Twitter 下载会自动带上。`
+    : `未上传 cookies,X/Twitter 先按游客模式试。建议上传浏览器导出的 cookies.txt。`;
 }
 
 function updateYouTubeCookiesHint(data = {}) {
@@ -202,8 +202,8 @@ function updateYouTubeCookiesHint(data = {}) {
   if (!hint) return;
   const path = data?.youtubeck || data?.youtube_cookies_path || '/app/data/cookies/youtube.cookies.txt';
   hint.textContent = data?.youtube_cookies_exists
-    ? `已检测到 cookies：${path}。YouTube 下载会自动带上。`
-    : `未上传 cookies，YouTube 先按公开视频模式试。遇到年龄限制/私密限制再补 cookies。`;
+    ? `已检测到 cookies:${path}。YouTube 下载会自动带上。`
+    : `未上传 cookies,YouTube 先按公开视频模式试。遇到年龄限制/私密限制再补 cookies。`;
 }
 
 function updateBilibiliCookiesHint(data = {}) {
@@ -211,18 +211,18 @@ function updateBilibiliCookiesHint(data = {}) {
   if (!hint) return;
   const path = data?.bilibilick || data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
   hint.textContent = data?.bilibili_cookies_exists
-    ? `已检测到 cookies：${path}。Bilibili 解析和下载会自动带上。`
-    : `未上传 cookies，Bilibili 可能触发 412 或拿不到视频流。建议上传浏览器导出的 cookies.txt。`;
+    ? `已检测到 cookies:${path}。Bilibili 解析和下载会自动带上。`
+    : `未上传 cookies,Bilibili 可能触发 412 或拿不到视频流。建议上传浏览器导出的 cookies.txt。`;
 }
 
 function updateWecomHints(data = {}) {
   const status = $('wecom-status-hint');
   if (status) {
     if (data?.wecom_forward_enabled) {
-      status.textContent = '已启用自定义企业微信转发：started/done/failed 主动通知会优先走转发地址。';
+      status.textContent = '已启用自定义企业微信转发:started/done/failed 主动通知会优先走转发地址。';
     } else {
       status.textContent = data?.wecom_ready
-        ? '企业微信配置已就绪，可以去企业微信里校验回调并开始收消息。'
+        ? '企业微信配置已就绪,可以去企业微信里校验回调并开始收消息。'
         : '企业微信配置未完成。把参数填完整后再保存。';
     }
   }
@@ -230,41 +230,29 @@ function updateWecomHints(data = {}) {
   const secretHint = $('wecom-secret-hint');
   if (secretHint) {
     secretHint.textContent = data?.wecom_secret_masked
-      ? `已保存：${data.wecom_secret_masked}。留空并保存可清空。`
-      : '未保存。Secret 只在保存时写入，接口返回会做掩码。';
+      ? `已保存:${data.wecom_secret_masked}。留空并保存可清空。`
+      : '未保存。Secret 只在保存时写入,接口返回会做掩码。';
   }
 
   const tokenHint = $('wecom-token-hint');
   if (tokenHint) {
     tokenHint.textContent = data?.wecom_token_masked
-      ? `已保存：${data.wecom_token_masked}。留空并保存可清空。`
-      : '未保存。Token 只在保存时写入，接口返回会做掩码。';
+      ? `已保存:${data.wecom_token_masked}。留空并保存可清空。`
+      : '未保存。Token 只在保存时写入,接口返回会做掩码。';
   }
 
   const aesHint = $('wecom-aes-hint');
   if (aesHint) {
     aesHint.textContent = data?.wecom_encoding_aes_key_masked
-      ? `已保存：${data.wecom_encoding_aes_key_masked}。留空并保存可清空。`
-      : '未保存。EncodingAESKey 只在保存时写入，接口返回会做掩码。';
+      ? `已保存:${data.wecom_encoding_aes_key_masked}。留空并保存可清空。`
+      : '未保存。EncodingAESKey 只在保存时写入,接口返回会做掩码。';
   }
 
   const forwardTokenHint = $('wecom-forward-token-hint');
   if (forwardTokenHint) {
     forwardTokenHint.textContent = data?.wecom_forward_token_masked
-      ? `已保存：${data.wecom_forward_token_masked}。留空并保存可清空。`
-      : '未保存。转发 Token 只在保存时写入，接口返回会做掩码。';
-  }
-  const telegramHashHint = $('telegram-api-hash-hint');
-  if (telegramHashHint) {
-    telegramHashHint.textContent = data?.telegram_api_hash_masked
-      ? `已保存：${data.telegram_api_hash_masked}。留空并保存可清空。`
-      : '未保存。API Hash 只在保存时写入，接口返回会做掩码。';
-  }
-  const telegramStatusHint = $('telegram-status-hint');
-  if (telegramStatusHint) {
-    telegramStatusHint.textContent = data?.telegram_ready
-      ? `Telegram 配置已就绪${data?.telegram_session_exists ? '，已检测到 session 文件。' : '，待你后续完成登录生成 session。'}`
-      : 'Telegram 配置未完成。先填 API ID / API Hash / 手机号后保存。';
+      ? `已保存:${data.wecom_forward_token_masked}。留空并保存可清空。`
+      : '未保存。转发 Token 只在保存时写入,接口返回会做掩码。';
   }
 }
 
@@ -284,21 +272,6 @@ function applyConfigToForm(data = {}) {
   }
   if ($('cfg_bilibilick')) {
     $('cfg_bilibilick').value = data?.bilibilick || data?.bilibili_cookies_path || '/app/data/cookies/bilibili.cookies.txt';
-  }
-  if ($('cfg_telegram_enabled')) {
-    $('cfg_telegram_enabled').checked = Boolean(data?.telegram_enabled);
-  }
-  if ($('cfg_telegram_api_id')) {
-    $('cfg_telegram_api_id').value = data?.telegram_api_id || '';
-  }
-  if ($('cfg_telegram_api_hash')) {
-    $('cfg_telegram_api_hash').value = data?.telegram_api_hash || '';
-  }
-  if ($('cfg_telegram_phone')) {
-    $('cfg_telegram_phone').value = data?.telegram_phone || '';
-  }
-  if ($('cfg_telegram_session_path')) {
-    $('cfg_telegram_session_path').value = data?.telegram_session_path || '/app/data/telegram/telegram.session';
   }
   if ($('cfg_wecom_enabled')) {
     $('cfg_wecom_enabled').checked = Boolean(data?.wecom_enabled);
@@ -487,7 +460,7 @@ function renderStreamList(data) {
   if (data?.media_type === 'image') {
     dom.streamPanel.classList.remove('hidden');
     dom.streamCountTag.textContent = `${Number(data?.image_count || (data?.images || []).length || 0)} images`;
-    dom.streamList.innerHTML = `<div class="summary-empty">这是图片帖，不需要选视频流，直接下载。</div>`;
+    dom.streamList.innerHTML = `<div class="summary-empty">这是图片帖,不需要选视频流,直接下载。</div>`;
     return;
   }
   if (!streams.length) {
@@ -523,7 +496,7 @@ function buildPreviewUrl() {
 function loadPreviewNative(previewUrl) {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const timer = setTimeout(() => finish(reject, new Error(`预览加载超时（${PREVIEW_TIMEOUT_MS / 1000}s）`)), PREVIEW_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(reject, new Error(`预览加载超时(${PREVIEW_TIMEOUT_MS / 1000}s)`)), PREVIEW_TIMEOUT_MS);
 
     const cleanup = () => {
       clearTimeout(timer);
@@ -539,7 +512,7 @@ function loadPreviewNative(previewUrl) {
     };
 
     dom.player.onloadedmetadata = () => finish(resolve, true);
-    dom.player.onerror = () => finish(reject, new Error('播放器加载失败，请检查流地址、代理或站点防盗链'));
+    dom.player.onerror = () => finish(reject, new Error('播放器加载失败,请检查流地址、代理或站点防盗链'));
     dom.player.src = previewUrl;
     dom.player.load();
   });
@@ -548,7 +521,7 @@ function loadPreviewNative(previewUrl) {
 function loadPreviewWithHls(previewUrl) {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const timer = setTimeout(() => finish(reject, new Error(`预览加载超时（${PREVIEW_TIMEOUT_MS / 1000}s）`)), PREVIEW_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(reject, new Error(`预览加载超时(${PREVIEW_TIMEOUT_MS / 1000}s)`)), PREVIEW_TIMEOUT_MS);
 
     const finish = (fn, value) => {
       if (settled) return;
@@ -568,7 +541,7 @@ function loadPreviewWithHls(previewUrl) {
     state.hls.on(Hls.Events.MANIFEST_PARSED, () => finish(resolve, true));
     state.hls.on(Hls.Events.ERROR, (_event, data) => {
       if (!data?.fatal) return;
-      finish(reject, new Error(`预览加载失败：${data?.details || 'unknown hls error'}`));
+      finish(reject, new Error(`预览加载失败:${data?.details || 'unknown hls error'}`));
     });
     state.hls.loadSource(previewUrl);
     state.hls.attachMedia(dom.player);
@@ -611,9 +584,9 @@ async function parseUrl() {
     renderStreamList(state.latestParseData || null);
 
     const payload = collect();
-    if (!payload.url) throw new Error('先贴链接，别让我猜你脑内 URL。');
+    if (!payload.url) throw new Error('先贴链接,别让我猜你脑内 URL。');
 
-    setStatus('解析中…', 'loading');
+    setStatus('解析中...', 'loading');
     const data = await api('/api/parse', payload);
     applyParseData(data);
     const shownCount = state.latestParseData?.stream_count ?? data.stream_count;
@@ -627,7 +600,7 @@ async function parseUrl() {
     resetPlayer();
     renderStreamList(null);
     showError('parse', e);
-    setStatus(`解析失败：${e.message}`, 'error');
+    setStatus(`解析失败:${e.message}`, 'error');
   }
 }
 
@@ -637,7 +610,7 @@ async function selectStream(index) {
   state.selectedStreamUrl = state.latestParseData.streams[index];
   renderStreamList(state.latestParseData);
   try {
-    setStatus(`加载视频 ${index + 1} 预览…`, 'loading');
+    setStatus(`加载视频 ${index + 1} 预览...`, 'loading');
     await loadPreview();
     renderSummary([
       { label: '当前状态', value: `视频 ${index + 1} 已选中并完成预览` },
@@ -647,19 +620,19 @@ async function selectStream(index) {
     setStatus(`已选视频 ${index + 1}`, 'success');
   } catch (e) {
     showPreviewErrorSummary(e?.message || String(e), index);
-    setStatus(`预览失败：${e.message}`, 'error');
+    setStatus(`预览失败:${e.message}`, 'error');
   }
 }
 
 async function downloadVideo() {
   try {
     const payload = collect();
-    if (!payload.url) throw new Error('链接都没填，下载个锤子。');
+    if (!payload.url) throw new Error('链接都没填,下载个锤子。');
     const isImageMode = state.latestParseData?.media_type === 'image';
     if (!isImageMode && (state.selectedStreamIndex === null || !state.selectedStreamUrl)) {
-      throw new Error('先解析出可用视频，再下载。');
+      throw new Error('先解析出可用视频,再下载。');
     }
-    setStatus('创建下载任务…', 'loading');
+    setStatus('创建下载任务...', 'loading');
     const data = await api('/api/download', payload, 45000);
     renderSummary([
       { label: '当前状态', value: data?.status_text || '任务已创建' },
@@ -671,22 +644,21 @@ async function downloadVideo() {
     setStatus('下载任务已创建', 'success');
   } catch (e) {
     showError('download', e);
-    setStatus(`下载失败：${e.message}`, 'error');
+    setStatus(`下载失败:${e.message}`, 'error');
   }
 }
 
 async function saveConfig() {
   try {
-    setStatus('保存设置…', 'loading');
+    setStatus('保存设置...', 'loading');
     const wecomSecretInput = $('cfg_wecom_secret')?.value.trim();
     const wecomTokenInput = $('cfg_wecom_token')?.value.trim();
     const wecomAesInput = $('cfg_wecom_encoding_aes_key')?.value.trim();
     const wecomForwardTokenInput = $('cfg_wecom_forward_token')?.value.trim();
-    const telegramApiHashInput = $('cfg_telegram_api_hash')?.value.trim();
     const defaultProxy = $('cfg_proxy').value.trim();
     const httpProxy = $('cfg_http_proxy')?.value.trim() || '';
     const httpsProxy = $('cfg_https_proxy')?.value.trim() || '';
-    // 如果系统代理为空但有默认代理，自动同步
+    // 如果系统代理为空但有默认代理,自动同步
     const finalHttpProxy = httpProxy || defaultProxy;
     const finalHttpsProxy = httpsProxy || defaultProxy;
     const data = await api('/api/config', {
@@ -700,11 +672,6 @@ async function saveConfig() {
       xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
       bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',
-      telegram_enabled: Boolean($('cfg_telegram_enabled')?.checked),
-      telegram_api_id: $('cfg_telegram_api_id')?.value.trim() || '',
-      telegram_api_hash: telegramApiHashInput === '' ? '__KEEP__' : telegramApiHashInput,
-      telegram_phone: $('cfg_telegram_phone')?.value.trim() || '',
-      telegram_session_path: $('cfg_telegram_session_path')?.value.trim() || '/app/data/telegram/telegram.session',
       wecom_enabled: Boolean($('cfg_wecom_enabled')?.checked),
       wecom_corp_id: $('cfg_wecom_corp_id')?.value.trim() || '',
       wecom_agent_id: $('cfg_wecom_agent_id')?.value.trim() || '',
@@ -720,7 +687,7 @@ async function saveConfig() {
     setStatus('设置已保存', 'success');
   } catch (e) {
     showError('config', e);
-    setStatus(`保存失败：${e.message}`, 'error');
+    setStatus(`保存失败:${e.message}`, 'error');
   }
 }
 
@@ -736,7 +703,7 @@ async function uploadTwitterCookies() {
   formData.append('file', file);
 
   try {
-    setStatus('上传 cookies.txt…', 'loading');
+    setStatus('上传 cookies.txt...', 'loading');
     const res = await fetch('/api/upload/twitter-cookies', {
       method: 'POST',
       body: formData,
@@ -749,11 +716,11 @@ async function uploadTwitterCookies() {
       { label: '当前状态', value: 'Twitter cookies 已上传', success: true, highlight: true },
       { label: '保存路径', value: data?.path || '/app/data/cookies/twitter.cookies.txt' },
       { label: '文件大小', value: `${Number(data?.size || 0)} bytes` },
-      { label: '下一步', value: '重新贴 X / Twitter 链接直接下载，它会自动带 cookies。' },
+      { label: '下一步', value: '重新贴 X / Twitter 链接直接下载,它会自动带 cookies。' },
     ], { variant: 'success' });
     setStatus('cookies 已上传', 'success');
   } catch (e) {
-    setStatus(`上传失败：${e.message}`, 'error');
+    setStatus(`上传失败:${e.message}`, 'error');
   }
 }
 
@@ -769,7 +736,7 @@ async function uploadYouTubeCookies() {
   formData.append('file', file);
 
   try {
-    setStatus('上传 YouTube cookies.txt…', 'loading');
+    setStatus('上传 YouTube cookies.txt...', 'loading');
     const res = await fetch('/api/upload/youtube-cookies', {
       method: 'POST',
       body: formData,
@@ -782,11 +749,11 @@ async function uploadYouTubeCookies() {
       { label: '当前状态', value: 'YouTube cookies 已上传', success: true, highlight: true },
       { label: '保存路径', value: data?.path || '/app/data/cookies/youtube.cookies.txt' },
       { label: '文件大小', value: `${Number(data?.size || 0)} bytes` },
-      { label: '下一步', value: '重新贴 YouTube 链接下载；遇到年龄限制视频时会自动带 cookies。' },
+      { label: '下一步', value: '重新贴 YouTube 链接下载;遇到年龄限制视频时会自动带 cookies。' },
     ], { variant: 'success' });
     setStatus('YouTube cookies 已上传', 'success');
   } catch (e) {
-    setStatus(`上传失败：${e.message}`, 'error');
+    setStatus(`上传失败:${e.message}`, 'error');
   }
 }
 
@@ -802,7 +769,7 @@ async function uploadBilibiliCookies() {
   formData.append('file', file);
 
   try {
-    setStatus('上传 Bilibili cookies.txt…', 'loading');
+    setStatus('上传 Bilibili cookies.txt...', 'loading');
     const res = await fetch('/api/upload/bilibili-cookies', {
       method: 'POST',
       body: formData,
@@ -815,48 +782,48 @@ async function uploadBilibiliCookies() {
       { label: '当前状态', value: 'Bilibili cookies 已上传', success: true, highlight: true },
       { label: '保存路径', value: data?.path || '/app/data/cookies/bilibili.cookies.txt' },
       { label: '文件大小', value: `${Number(data?.size || 0)} bytes` },
-      { label: '下一步', value: '重新贴 Bilibili 链接解析或下载；它会自动带 cookies。' },
+      { label: '下一步', value: '重新贴 Bilibili 链接解析或下载;它会自动带 cookies。' },
     ], { variant: 'success' });
     setStatus('Bilibili cookies 已上传', 'success');
   } catch (e) {
-    setStatus(`上传失败：${e.message}`, 'error');
+    setStatus(`上传失败:${e.message}`, 'error');
   }
 }
 
 async function retryJob(jobId) {
   if (!jobId) return;
   try {
-    setStatus('重新创建任务…', 'loading');
+    setStatus('重新创建任务...', 'loading');
     const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {}, 30000);
     await refreshJobs();
     const newJobId = data?.new_job?.id || '未知';
     const newOutput = data?.new_job?.output || '';
-    setStatus(`已重试，新的任务编号：${newJobId}${newOutput ? ` · ${newOutput}` : ''}`, 'success');
+    setStatus(`已重试,新的任务编号:${newJobId}${newOutput ? ` · ${newOutput}` : ''}`, 'success');
   } catch (e) {
-    setStatus(`重试失败：${e.message}`, 'error');
+    setStatus(`重试失败:${e.message}`, 'error');
   }
 }
 
 async function deleteJob(jobId) {
   if (!jobId) return;
   try {
-    setStatus('删除任务…', 'loading');
+    setStatus('删除任务...', 'loading');
     const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/delete`, {}, 20000);
     await refreshJobs();
     setStatus(data?.cancelling ? '已请求取消任务' : '任务已删除', 'success');
   } catch (e) {
-    setStatus(`删除失败：${e.message}`, 'error');
+    setStatus(`删除失败:${e.message}`, 'error');
   }
 }
 
 async function clearHistory() {
   try {
-    setStatus('清空历史…', 'loading');
+    setStatus('清空历史...', 'loading');
     const data = await api('/api/jobs/clear-history', {}, 20000);
     await refreshJobs();
     setStatus(`已清空 ${Number(data?.removed || 0)} 条历史`, 'success');
   } catch (e) {
-    setStatus(`清空失败：${e.message}`, 'error');
+    setStatus(`清空失败:${e.message}`, 'error');
   }
 }
 
@@ -934,14 +901,14 @@ function humanizeJobMeta(job) {
   const raw = String(job?.status_text || '').trim();
   if (!raw) return '';
   return raw
-    .replace(/^正在下载…\s*/g, '')
-    .replace(/^激进模式下载中…\s*/g, '正在并发抓分片 · ')
-    .replace(/^开始抓取视频（带 cookies）\s*·\s*/g, '开始抓取视频（带登录态） · ')
+    .replace(/^正在下载...\s*/g, '')
+    .replace(/^激进模式下载中...\s*/g, '正在并发抓分片 · ')
+    .replace(/^开始抓取视频(带 cookies)\s*·\s*/g, '开始抓取视频(带登录态) · ')
     .replace(/^开始抓取视频\s*·\s*/g, '开始抓取视频 · ')
     .replace(/^开始直连下载\s*·\s*/g, '开始直连下载 · ')
     .replace(/^开始下载\s*·\s*/g, '开始下载 · ')
     .replace(/^已开始下载视频/g, '已开始下载视频')
-    .replace(/^主方案失败，已切到兼容下载\s*·\s*/g, '主方案失败，已切到兼容下载 · ')
+    .replace(/^主方案失败,已切到兼容下载\s*·\s*/g, '主方案失败,已切到兼容下载 · ')
     .replace(/^排队中\s*·\s*/g, '')
     .replace(/\b并发槽\s*/g, '下载槽位 ')
     .replace(/\b分片\s*/g, '已完成分片 ')
@@ -953,7 +920,7 @@ function humanizeJobMeta(job) {
     .replace(/\b剩余\s*/g, '剩余 ')
     .replace(/当前并行 /g, '当前下载槽位 ')
     .replace(/当前下载槽位 /g, '当前下载槽位 ')
-    .replace(/，前面还有 /g, '，前面还有 ');
+    .replace(/,前面还有 /g, ',前面还有 ');
 }
 
 function formatRelativeDuration(ms) {
@@ -1023,7 +990,7 @@ function summarizeSource(job) {
 function truncateText(value, max = 120) {
   const text = String(value || '');
   if (text.length <= max) return text;
-  return `${text.slice(0, max - 1)}…`;
+  return `${text.slice(0, max - 1)}...`;
 }
 
 function buildJobCard(job, { compact = false } = {}) {
@@ -1263,58 +1230,3 @@ window.addEventListener('load', async () => {
   } catch (_) {}
   refreshJobs().catch(() => {});
 });
-
-
-async function telegramCheckStatus() {
-  try {
-    const res = await fetch('/api/telegram/status', { cache: 'no-store' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
-    const summary = data?.authorized
-      ? `Telegram 已登录：${data?.user?.first_name || data?.user?.username || data?.user?.phone || 'unknown'}`
-      : (data?.configured ? 'Telegram 未登录，需发送验证码完成登录。' : 'Telegram 尚未配置完整。');
-    setStatus(summary, data?.authorized ? 'success' : 'info');
-    // 不调用 loadConfig()，避免清空表单中已填写但未保存的数据
-  } catch (e) {
-    setStatus(`Telegram 状态检查失败：${e.message}`, 'error');
-  }
-}
-
-async function telegramSendCode() {
-  try {
-    const payload = {
-      api_id: $('cfg_telegram_api_id')?.value.trim() || '',
-      api_hash: $('cfg_telegram_api_hash')?.value.trim() || '',
-      phone: $('cfg_telegram_phone')?.value.trim() || '',
-      session_path: $('cfg_telegram_session_path')?.value.trim() || '/app/data/telegram/telegram.session',
-    };
-    const data = await api('/api/telegram/send-code', payload, 45000);
-    if ($('cfg_telegram_phone_code_hash')) $('cfg_telegram_phone_code_hash').value = data?.phone_code_hash || '';
-    setStatus('Telegram 验证码已发送，填验证码后点“完成登录”。', 'success');
-  } catch (e) {
-    setStatus(`Telegram 发码失败：${e.message}`, 'error');
-  }
-}
-
-async function telegramSignIn() {
-  try {
-    const payload = {
-      api_id: $('cfg_telegram_api_id')?.value.trim() || '',
-      api_hash: $('cfg_telegram_api_hash')?.value.trim() || '',
-      phone: $('cfg_telegram_phone')?.value.trim() || '',
-      code: $('cfg_telegram_code')?.value.trim() || '',
-      phone_code_hash: $('cfg_telegram_phone_code_hash')?.value.trim() || '',
-      password: $('cfg_telegram_password')?.value.trim() || '',
-      session_path: $('cfg_telegram_session_path')?.value.trim() || '/app/data/telegram/telegram.session',
-    };
-    const data = await api('/api/telegram/sign-in', payload, 45000);
-    setStatus(`Telegram 登录成功：${data?.user?.first_name || data?.user?.username || data?.user?.phone || 'unknown'}`, 'success');
-    await loadConfig();
-  } catch (e) {
-    setStatus(`Telegram 登录失败：${e.message}`, 'error');
-  }
-}
-
-window.telegramCheckStatus = telegramCheckStatus;
-window.telegramSendCode = telegramSendCode;
-window.telegramSignIn = telegramSignIn;
