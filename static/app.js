@@ -683,10 +683,16 @@ async function saveConfig() {
     const wecomAesInput = $('cfg_wecom_encoding_aes_key')?.value.trim();
     const wecomForwardTokenInput = $('cfg_wecom_forward_token')?.value.trim();
     const telegramApiHashInput = $('cfg_telegram_api_hash')?.value.trim();
+    const defaultProxy = $('cfg_proxy').value.trim();
+    const httpProxy = $('cfg_http_proxy')?.value.trim() || '';
+    const httpsProxy = $('cfg_https_proxy')?.value.trim() || '';
+    // 如果系统代理为空但有默认代理，自动同步
+    const finalHttpProxy = httpProxy || defaultProxy;
+    const finalHttpsProxy = httpsProxy || defaultProxy;
     const data = await api('/api/config', {
-      default_proxy: $('cfg_proxy').value.trim(),
-      http_proxy: $('cfg_http_proxy')?.value.trim() || '',
-      https_proxy: $('cfg_https_proxy')?.value.trim() || '',
+      default_proxy: defaultProxy,
+      http_proxy: finalHttpProxy,
+      https_proxy: finalHttpsProxy,
       no_proxy: $('cfg_no_proxy')?.value.trim() || '',
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
       auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),

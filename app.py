@@ -1821,10 +1821,11 @@ async def telegram_status():
     api_hash = str(cfg.get("telegram_api_hash") or "").strip()
     session_path = str(cfg.get("telegram_session_path") or "/app/data/telegram/telegram.session").strip() or "/app/data/telegram/telegram.session"
     proxy = str(cfg.get("http_proxy") or "").strip() or None
+    default_proxy = str(cfg.get("default_proxy") or "").strip() or None
     if not api_id or not api_hash:
         return {"ok": True, "authorized": False, "configured": False, "session_path": session_path}
     try:
-        result = await telegram_probe_session(api_id, api_hash, session_path, proxy)
+        result = await telegram_probe_session(api_id, api_hash, session_path, proxy, default_proxy)
         result["configured"] = True
         return result
     except Exception as exc:
@@ -1835,8 +1836,9 @@ async def telegram_status():
 async def telegram_send_login_code(payload: TelegramCodePayload):
     cfg = load_config()
     proxy = str(cfg.get("http_proxy") or "").strip() or None
+    default_proxy = str(cfg.get("default_proxy") or "").strip() or None
     try:
-        return await telegram_send_code(payload.api_id, payload.api_hash, payload.session_path or "/app/data/telegram/telegram.session", payload.phone, proxy)
+        return await telegram_send_code(payload.api_id, payload.api_hash, payload.session_path or "/app/data/telegram/telegram.session", payload.phone, proxy, default_proxy)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Telegram 发送验证码失败：{exc}")
 
@@ -1845,8 +1847,9 @@ async def telegram_send_login_code(payload: TelegramCodePayload):
 async def telegram_finish_sign_in(payload: TelegramSignInPayload):
     cfg = load_config()
     proxy = str(cfg.get("http_proxy") or "").strip() or None
+    default_proxy = str(cfg.get("default_proxy") or "").strip() or None
     try:
-        result = await telegram_sign_in(payload.api_id, payload.api_hash, payload.session_path or "/app/data/telegram/telegram.session", payload.phone, payload.code, payload.phone_code_hash, payload.password, proxy)
+        result = await telegram_sign_in(payload.api_id, payload.api_hash, payload.session_path or "/app/data/telegram/telegram.session", payload.phone, payload.code, payload.phone_code_hash, payload.password, proxy, default_proxy)
         if result.get("ok") is False and result.get("need_password"):
             raise HTTPException(status_code=409, detail="需要 Telegram 两步验证密码")
         return result
