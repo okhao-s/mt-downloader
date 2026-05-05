@@ -17,13 +17,16 @@ def _build_client(api_id: str | int, api_hash: str, session_path: str, proxy: Op
     api_hash = str(api_hash).strip()
     
     if proxy:
-        # Telethon proxy 格式: ('http', 'host', port)
-        # 从 http://host:port 解析
+        # Telethon proxy 格式: ('socks5', 'host', port, username, password)
+        # 从 socks5://host:port 或 http://host:port 解析
         import re
-        m = re.match(r'https?://([^:]+):(\d+)', proxy)
+        m = re.match(r'(https?|socks5?)://(?:([^:@]+):([^:@]+)@)?([^:]+):(\d+)', proxy)
         if m:
-            host, port = m.groups()
-            return TelegramClient(session, api_id, api_hash, proxy=('http', host, int(port)))
+            proto, username, password, host, port = m.groups()
+            if proto in ('socks5', 'socks'):
+                return TelegramClient(session, api_id, api_hash, proxy=('socks5', host, int(port), username or '', password or ''))
+            else:
+                return TelegramClient(session, api_id, api_hash, proxy=('http', host, int(port)))
     return TelegramClient(session, api_id, api_hash)
 
 
