@@ -304,13 +304,13 @@ function applyConfigToForm(data = {}) {
     $('cfg_wecom_agent_id').value = data?.wecom_agent_id || '';
   }
   if ($('cfg_wecom_secret')) {
-    $('cfg_wecom_secret').value = '';
+    $('cfg_wecom_secret').value = data?.wecom_secret_masked || '';
   }
   if ($('cfg_wecom_token')) {
-    $('cfg_wecom_token').value = '';
+    $('cfg_wecom_token').value = data?.wecom_token_masked || '';
   }
   if ($('cfg_wecom_encoding_aes_key')) {
-    $('cfg_wecom_encoding_aes_key').value = '';
+    $('cfg_wecom_encoding_aes_key').value = data?.wecom_encoding_aes_key_masked || '';
   }
   if ($('cfg_wecom_callback_url')) {
     $('cfg_wecom_callback_url').value = data?.wecom_callback_url || '';
@@ -319,7 +319,7 @@ function applyConfigToForm(data = {}) {
     $('cfg_wecom_forward_url').value = data?.wecom_forward_url || '';
   }
   if ($('cfg_wecom_forward_token')) {
-    $('cfg_wecom_forward_token').value = '';
+    $('cfg_wecom_forward_token').value = data?.wecom_forward_token_masked || '';
   }
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
@@ -815,7 +815,8 @@ async function retryJob(jobId) {
     const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {}, 30000);
     await refreshJobs();
     const newJobId = data?.new_job?.id || '未知';
-    setStatus(`已重试，新的任务编号：${newJobId}`, 'success');
+    const newOutput = data?.new_job?.output || '';
+    setStatus(`已重试，新的任务编号：${newJobId}${newOutput ? ` · ${newOutput}` : ''}`, 'success');
   } catch (e) {
     setStatus(`重试失败：${e.message}`, 'error');
   }
@@ -1258,7 +1259,7 @@ async function telegramCheckStatus() {
       ? `Telegram 已登录：${data?.user?.first_name || data?.user?.username || data?.user?.phone || 'unknown'}`
       : (data?.configured ? 'Telegram 未登录，需发送验证码完成登录。' : 'Telegram 尚未配置完整。');
     setStatus(summary, data?.authorized ? 'success' : 'info');
-    await loadConfig();
+    // 不调用 loadConfig()，避免清空表单中已填写但未保存的数据
   } catch (e) {
     setStatus(`Telegram 状态检查失败：${e.message}`, 'error');
   }
