@@ -383,27 +383,6 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
     return html
 
 
-    found = []
-    for pat in patterns[:3]:
-        for match in re.findall(pat, html, re.IGNORECASE):
-            candidate = match if isinstance(match, str) else match[0]
-            candidate = candidate.replace('\\/', '/')
-            found.append(candidate)
-
-    variants_blocks = re.findall(patterns[3], html, re.IGNORECASE | re.DOTALL)
-    for block in variants_blocks:
-        for url in re.findall(r'https?:\\/\\/video\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?', block, re.IGNORECASE):
-            found.append(url.replace('\\/', '/'))
-
-    cleaned = []
-    for candidate in found:
-        if not isinstance(candidate, str):
-            continue
-        if 'video.twimg.com/' in candidate or 'video.twimg.com/' in candidate:
-            cleaned.append(candidate.replace('video.twimg.com/', 'video.twimg.com/'))
-    return dedupe_keep_order(cleaned)
-
-
 def extract_douyin_share_streams(html: str) -> tuple[list[str], list[dict]]:
     found = []
     options = []
