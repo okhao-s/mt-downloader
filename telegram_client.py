@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Optional
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
-from telethon.network.connection.tcphttp import ConnectionTcphttp
 
 
 def _normalize_session_path(session_path: str) -> str:
@@ -18,8 +17,13 @@ def _build_client(api_id: str | int, api_hash: str, session_path: str, proxy: Op
     api_hash = str(api_hash).strip()
     
     if proxy:
-        # 使用 HTTP 代理连接
-        return TelegramClient(session, api_id, api_hash, connection=ConnectionTcphttp)
+        # Telethon proxy 格式: ('http', 'host', port)
+        # 从 http://host:port 解析
+        import re
+        m = re.match(r'https?://([^:]+):(\d+)', proxy)
+        if m:
+            host, port = m.groups()
+            return TelegramClient(session, api_id, api_hash, proxy=('http', host, int(port)))
     return TelegramClient(session, api_id, api_hash)
 
 
