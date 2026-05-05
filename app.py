@@ -1149,6 +1149,11 @@ class ConfigPayload(BaseModel):
     wecom_callback_url: str | None = ""
     wecom_forward_url: str | None = ""
     wecom_forward_token: str | None = CONFIG_KEEP_SENTINEL
+    telegram_enabled: bool = False
+    telegram_api_id: str | None = ""
+    telegram_api_hash: str | None = CONFIG_KEEP_SENTINEL
+    telegram_phone: str | None = ""
+    telegram_session_path: str | None = "/app/data/telegram/telegram.session"
 
 
 @app.get("/", response_class=HTMLResponse)
