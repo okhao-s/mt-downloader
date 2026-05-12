@@ -254,10 +254,10 @@ function updateWecomHints(data = {}) {
 }
 
 function applyConfigToForm(data = {}) {
-  $('cfg_proxy').value = data?.default_proxy || '';
-  $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
-  $('cfg_auto_retry_delay_seconds').value = Number(data?.auto_retry_delay_seconds ?? 30);
-  $('cfg_auto_retry_max_attempts').value = Number(data?.auto_retry_max_attempts ?? 2);
+  if ($('cfg_proxy')) $('cfg_proxy').value = data?.default_proxy || '';
+  if ($('cfg_auto_retry_enabled')) $('cfg_auto_retry_enabled').checked = Boolean(data?.auto_retry_enabled);
+  if ($('cfg_auto_retry_delay_seconds')) $('cfg_auto_retry_delay_seconds').value = Number(data?.auto_retry_delay_seconds ?? 30);
+  if ($('cfg_auto_retry_max_attempts')) $('cfg_auto_retry_max_attempts').value = Number(data?.auto_retry_max_attempts ?? 2);
   if ($('cfg_xck')) {
     $('cfg_xck').value = data?.xck || data?.twitter_cookies_path || '/app/data/cookies/twitter.cookies.txt';
   }
@@ -650,10 +650,10 @@ async function saveConfig() {
     const wecomAesInput = $('cfg_wecom_encoding_aes_key')?.value.trim();
     const wecomForwardTokenInput = $('cfg_wecom_forward_token')?.value.trim();
     const data = await api('/api/config', {
-      default_proxy: $('cfg_proxy').value.trim(),
-      auto_retry_enabled: Boolean($('cfg_auto_retry_enabled').checked),
-      auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds').value || 30),
-      auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts').value || 0),
+      default_proxy: $('cfg_proxy')?.value.trim() || '',
+      auto_retry_enabled: Boolean($('cfg_auto_retry_enabled')?.checked),
+      auto_retry_delay_seconds: Number($('cfg_auto_retry_delay_seconds')?.value || 30),
+      auto_retry_max_attempts: Number($('cfg_auto_retry_max_attempts')?.value || 0),
       xck: $('cfg_xck')?.value.trim() || '/app/data/cookies/twitter.cookies.txt',
       youtubeck: $('cfg_youtubeck')?.value.trim() || '/app/data/cookies/youtube.cookies.txt',
       bilibilick: $('cfg_bilibilick')?.value.trim() || '/app/data/cookies/bilibili.cookies.txt',

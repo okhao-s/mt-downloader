@@ -30,6 +30,10 @@ def ensure_parent(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _keep_sentinel(value: str) -> bool:
+    return value == "__KEEP__"
+
+
 def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg = dict(cfg or {})
     xck = cfg.get("xck") or cfg.get("twitter_cookies_path") or "/app/data/cookies/twitter.cookies.txt"
@@ -47,10 +51,17 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg["wecom_enabled"] = bool(cfg.get("wecom_enabled", False))
     cfg["wecom_corp_id"] = str(cfg.get("wecom_corp_id") or "")
     cfg["wecom_agent_id"] = str(cfg.get("wecom_agent_id") or "")
-    cfg["wecom_secret"] = str(cfg.get("wecom_secret") or "")
-    cfg["wecom_token"] = str(cfg.get("wecom_token") or "")
-    cfg["wecom_encoding_aes_key"] = str(cfg.get("wecom_encoding_aes_key") or "")
+    # Preserve __KEEP__ sentinel — don't overwrite real secrets with empty string
+    secret = str(cfg.get("wecom_secret") or "")
+    cfg["wecom_secret"] = secret if not _keep_sentinel(secret) else cfg.get("wecom_secret", "")
+    token = str(cfg.get("wecom_token") or "")
+    cfg["wecom_token"] = token if not _keep_sentinel(token) else cfg.get("wecom_token", "")
+    aes_key = str(cfg.get("wecom_encoding_aes_key") or "")
+    cfg["wecom_encoding_aes_key"] = aes_key if not _keep_sentinel(aes_key) else cfg.get("wecom_encoding_aes_key", "")
     cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or "")
+    # wecom_forward_token was missing from this function — add it with sentinel protection
+    fwd_token = str(cfg.get("wecom_forward_token") or "")
+    cfg["wecom_forward_token"] = fwd_token if not _keep_sentinel(fwd_token) else cfg.get("wecom_forward_token", "")
     return cfg
 
 
