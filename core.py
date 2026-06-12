@@ -21,6 +21,8 @@ X_TWEET_RESULT_BY_REST_ID_QUERY = "sBoAB5nqJTOyR9sZ5qVLsw"
 DEFAULT_PROXY_BYPASS_PLATFORMS = {"douyin", "bilibili"}
 YTDLP_INFO_TIMEOUT = int(os.getenv("YTDLP_INFO_TIMEOUT", "45"))
 YTDLP_SOCKET_TIMEOUT = int(os.getenv("YTDLP_SOCKET_TIMEOUT", "30"))
+YTDLP_DOWNLOAD_TIMEOUT = int(os.getenv("YTDLP_DOWNLOAD_TIMEOUT", "1800"))
+AGGRESSIVE_HLS_TIMEOUT = int(os.getenv("AGGRESSIVE_HLS_TIMEOUT", "1800"))
 DISCOVER_STREAM_CACHE_TTL = max(1, int(os.getenv("DISCOVER_STREAM_CACHE_TTL", "15")))
 _DISCOVER_STREAM_CACHE: dict[tuple, tuple[float, dict]] = {}
 _DISCOVER_STREAM_CACHE_LOCK = threading.Lock()
@@ -59,9 +61,6 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     aes_key = str(cfg.get("wecom_encoding_aes_key") or "")
     cfg["wecom_encoding_aes_key"] = aes_key if not _keep_sentinel(aes_key) else cfg.get("wecom_encoding_aes_key", "")
     cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or "")
-    # wecom_forward_token was missing from this function — add it with sentinel protection
-    fwd_token = str(cfg.get("wecom_forward_token") or "")
-    cfg["wecom_forward_token"] = fwd_token if not _keep_sentinel(fwd_token) else cfg.get("wecom_forward_token", "")
     return cfg
 
 
@@ -774,6 +773,7 @@ def download_with_ytdlp(
     progress_re = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
     size_re = re.compile(r"\[download\]\s+\d+(?:\.\d+)?%\s+of\s+([^\s]+)")
     speed_re = re.compile(r"at\s+([^\s]+)")
+    speed_unit_re = re.compile(r"([\d.]+)\s*(B|KiB|MiB|GiB)/s")
     eta_re = re.compile(r"ETA\s+([0-9:]+)")
 
     def run_once(active_cookies_path: Optional[str]):
@@ -825,7 +825,19 @@ def download_with_ytdlp(
                         if size_match:
                             parts.append(f"总大小 {size_match.group(1)}")
                         if speed_match:
-                            parts.append(f"速度 {speed_match.group(1)}")
+                            raw_speed = speed_match.group(1)
+                            # 统一转为 MB/s
+                            m = speed_unit_re.match(raw_speed)
+                            if m:
+                                val = float(m.group(1))
+                                unit = m.group(2)
+                                if unit == "KiB":
+                                    val /= 1024.0
+                                elif unit == "GiB":
+                                    val *= 1024.0
+                                parts.append(f"速度 {val:.2f} MB/s")
+                            else:
+                                parts.append(f"速度 {raw_speed}")
                         if eta_match:
                             parts.append(f"剩余 {eta_match.group(1)}")
                         status = f"已下载 {match.group(1)}%"
@@ -839,7 +851,16 @@ def download_with_ytdlp(
                         elif "merging formats into" in lower_line or "recoding video to" in lower_line:
                             progress_callback(99, "正在合并并转成 MP4")
         finally:
-            returncode = process.wait()
+            try:
+                returncode = process.wait(timeout=YTDLP_DOWNLOAD_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    process.kill()
+                    process.wait()
+                raise RuntimeError(f"yt-dlp 下载超时（>{YTDLP_DOWNLOAD_TIMEOUT}s）")
 
         if returncode != 0:
             detail = "\n".join(lines[-80:]).strip() or f"yt-dlp exited with code {returncode}"
@@ -1193,6 +1214,11 @@ def extract_x_streams(meta: dict) -> tuple[list[str], list[dict], list[dict]]:
 
         vcodec = str(fmt.get("vcodec") or "none").lower()
         if vcodec in {"none", "null", "unknown"}:
+            continue
+
+        # 过滤 video-only 格式（acodec 为 none/null/unknown），确保下载的视频有音频
+        acodec = str(fmt.get("acodec") or "none").lower()
+        if acodec in {"none", "null", "unknown"}:
             continue
 
         width = fmt.get("width")
@@ -1619,14 +1645,19 @@ def ffmpeg_download(
             return
         out_time_ms = int(stats.get("out_time_ms") or 0)
         total_size = int(stats.get("total_size") or 0)
-        speed = (stats.get("speed") or "").strip()
+        elapsed_s = max(0.1, out_time_ms / 1000.0)
         pseudo_progress = max(8, min(95, 8 + out_time_ms // 15_000_000))
         parts = [f"视频进度 {out_time_ms / 1000000:.1f}s"]
         if total_size > 0:
             parts.append(f"已下载 {total_size / 1024 / 1024:.1f}MB")
-        if speed and speed != "N/A":
-            parts.append(f"下载速度 {speed}")
+        # ffmpeg speed= 是编码倍速（如 1.50x），不是下载速度；用 total_size / elapsed 计算 MB/s
+        if total_size > 0 and elapsed_s > 0:
+            speed_mb = total_size / 1024 / 1024 / elapsed_s
+            parts.append(f"下载速度 {speed_mb:.2f} MB/s")
         progress_callback(pseudo_progress, "正在下载… " + " · ".join(parts))
+
+    # ffmpeg 下载超时：默认 1800s（30 分钟），可通过环境变量覆盖
+    _FFMPEG_DOWNLOAD_TIMEOUT = int(os.getenv("FFMPEG_DOWNLOAD_TIMEOUT", "1800"))
 
     try:
         if process.stdout is not None:
@@ -1647,8 +1678,20 @@ def ffmpeg_download(
                 elif line == "progress=end":
                     if progress_callback:
                         progress_callback(99, "正在收尾封装…")
-    finally:
-        returncode = process.wait()
+        returncode = process.wait(timeout=_FFMPEG_DOWNLOAD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # 超时：先尝试优雅终止，再强制 kill
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            process.kill()
+            process.wait()
+        raise RuntimeError(f"ffmpeg 下载超时（>{_FFMPEG_DOWNLOAD_TIMEOUT}s）")
+    except KeyboardInterrupt:
+        process.terminate()
+        process.wait()
+        raise
 
     if returncode != 0:
         detail = "\n".join(progress_lines[-80:]).strip()
@@ -1726,6 +1769,10 @@ def aggressive_hls_download(
 
     def fetch_one(index_url):
         index, seg_url = index_url
+        # 总超时检查（每个分片下载前）
+        elapsed = time.time() - start_time
+        if elapsed > AGGRESSIVE_HLS_TIMEOUT:
+            raise RuntimeError(f"激进模式总超时（>{AGGRESSIVE_HLS_TIMEOUT}s），已下载 {downloaded}/{total_segments} 分片")
         last_error = None
         for attempt in range(1, 4):
             try:
@@ -1736,6 +1783,9 @@ def aggressive_hls_download(
                 return index, seg_path, len(seg_resp.content), attempt
             except Exception as exc:
                 last_error = exc
+                # 重试前再次检查总超时
+                if time.time() - start_time > AGGRESSIVE_HLS_TIMEOUT:
+                    raise RuntimeError(f"激进模式总超时（>{AGGRESSIVE_HLS_TIMEOUT}s），已下载 {downloaded}/{total_segments} 分片")
                 time.sleep(min(1.5 * attempt, 4))
         raise RuntimeError(f"分片 {index + 1} 重试 3 次仍失败: {last_error}")
 
@@ -1755,6 +1805,10 @@ def aggressive_hls_download(
                     retry_note = f" · 重试 {attempt - 1} 次成功" if attempt > 1 else ""
                     progress_callback(progress, f"激进模式下载中… 并发 {segment_workers} · 分片 {downloaded}/{total_segments} · 已下载 {downloaded_bytes / 1024 / 1024:.1f}MB · 速度 {speed_mb:.2f} MB/s{retry_note}")
 
+        # 合并前再次检查总超时
+        if time.time() - start_time > AGGRESSIVE_HLS_TIMEOUT:
+            raise RuntimeError(f"激进模式总超时（>{AGGRESSIVE_HLS_TIMEOUT}s），已下载 {downloaded}/{total_segments} 分片")
+
         concat_file = tmp_dir / "concat.txt"
         concat_file.write_text("".join([f"file '{(tmp_dir / f'{i:06d}.ts').as_posix()}'\n" for i in range(total_segments)]), encoding="utf-8")
 
@@ -1768,7 +1822,7 @@ def aggressive_hls_download(
             "-movflags", "+faststart",
             str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or f"ffmpeg concat failed: {result.returncode}").strip()
             raise RuntimeError(detail[-4000:])
@@ -1787,7 +1841,11 @@ def aggressive_hls_download(
             pass
 
 
-def normalize_filename(name: str) -> str:
+def normalize_filename(name: str, max_bytes: int = 150) -> str:
+    """
+    标准化文件名，限制总长度（含扩展名）不超过 max_bytes 字节。
+    默认 150 字节，为冲突后缀（如 " (1)"）留出空间。
+    """
     raw = str(name or "").strip()
     if not raw:
         return "output.mp4"
@@ -1809,9 +1867,9 @@ def normalize_filename(name: str) -> str:
     stem = stem.strip(" ._")
     stem = re.sub(r"\.{2,}", ".", stem)
 
-    max_name_bytes = 240
-    suffix_bytes = len(suffix.encode("utf-8"))
-    max_stem_bytes = max(1, max_name_bytes - suffix_bytes)
+    # 预留空间给冲突后缀 " (N)"（最多 5 字符，如 " (999)"）
+    reserved_for_suffix = 5
+    max_stem_bytes = max(1, max_bytes - len(suffix.encode("utf-8")) - reserved_for_suffix)
     while stem and len(stem.encode("utf-8")) > max_stem_bytes:
         stem = stem[:-1].rstrip(" ._")
 
