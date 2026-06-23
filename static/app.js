@@ -28,6 +28,7 @@ const state = {
   hls: null,
   selectedStreamIndex: null,
   selectedStreamUrl: null,
+  selectedMediaIndex: null,
   latestParseData: null,
   autoFilledOutput: '',
   jobsTimer: null,
@@ -106,6 +107,7 @@ function collect() {
     proxy: $('proxy').value.trim(),
     stream_index: state.selectedStreamIndex,
     stream_url: state.selectedStreamUrl,
+    media_index: state.selectedMediaIndex,
   };
 }
 
@@ -215,43 +217,33 @@ function updateBilibiliCookiesHint(data = {}) {
 function updateWecomHints(data = {}) {
   const status = $('wecom-status-hint');
   if (status) {
-    if (data?.wecom_forward_enabled) {
-      status.textContent = '已启用自定义企业微信转发：started/done/failed 主动通知会优先走转发地址。';
-    } else {
-      status.textContent = data?.wecom_ready
-        ? '企业微信配置已就绪，可以去企业微信里校验回调并开始收消息。'
-        : '企业微信配置未完成。把参数填完整后再保存。';
-    }
+    status.textContent = data?.wecom_ready
+      ? '企业微信配置已就绪，可以去企业微信里校验回调并开始收消息。'
+      : '企业微信配置未完成。把参数填完整后再保存。';
   }
 
   const secretHint = $('wecom-secret-hint');
   if (secretHint) {
     secretHint.textContent = data?.wecom_secret_masked
-      ? `已保存：${data.wecom_secret_masked}。留空并保存可清空。`
+      ? `已保存：${data.wecom_secret_masked}。留空并保存表示保留原值。`
       : '未保存。Secret 只在保存时写入，接口返回会做掩码。';
   }
 
   const tokenHint = $('wecom-token-hint');
   if (tokenHint) {
     tokenHint.textContent = data?.wecom_token_masked
-      ? `已保存：${data.wecom_token_masked}。留空并保存可清空。`
+      ? `已保存：${data.wecom_token_masked}。留空并保存表示保留原值。`
       : '未保存。Token 只在保存时写入，接口返回会做掩码。';
   }
 
   const aesHint = $('wecom-aes-hint');
   if (aesHint) {
     aesHint.textContent = data?.wecom_encoding_aes_key_masked
-      ? `已保存：${data.wecom_encoding_aes_key_masked}。留空并保存可清空。`
+      ? `已保存：${data.wecom_encoding_aes_key_masked}。留空并保存表示保留原值。`
       : '未保存。EncodingAESKey 只在保存时写入，接口返回会做掩码。';
   }
 
-  const forwardTokenHint = $('wecom-forward-token-hint');
-  if (forwardTokenHint) {
-    forwardTokenHint.textContent = data?.wecom_forward_token_masked
-      ? `已保存：${data.wecom_forward_token_masked}。留空并保存可清空。`
-      : '未保存。转发 Token 只在保存时写入，接口返回会做掩码。';
   }
-}
 
 function applyConfigToForm(data = {}) {
   if ($('cfg_proxy')) $('cfg_proxy').value = data?.default_proxy || '';
@@ -287,12 +279,6 @@ function applyConfigToForm(data = {}) {
   }
   if ($('cfg_wecom_callback_url')) {
     $('cfg_wecom_callback_url').value = data?.wecom_callback_url || '';
-  }
-  if ($('cfg_wecom_forward_url')) {
-    $('cfg_wecom_forward_url').value = data?.wecom_forward_url || '';
-  }
-  if ($('cfg_wecom_forward_token')) {
-    $('cfg_wecom_forward_token').value = '';
   }
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
@@ -448,6 +434,13 @@ function collapseStreamsForDisplay(data) {
   };
 }
 
+function getMediaIndexForStream(data, streamIndex) {
+  const entries = data?.media_entries || [];
+  const entry = entries[streamIndex];
+  if (entry && entry.media_index !== undefined && entry.media_index !== null) return Number(entry.media_index);
+  return Number.isInteger(streamIndex) ? streamIndex : null;
+}
+
 function renderStreamList(data) {
   const options = data?.stream_options || [];
   const streams = data?.streams || [];
@@ -468,9 +461,10 @@ function renderStreamList(data) {
   dom.streamCountTag.textContent = `${streams.length} streams`;
   dom.streamList.innerHTML = streams.map((stream, index) => {
     const option = options.find(item => item.url === stream) || { url: stream };
+    const mediaIndex = getMediaIndexForStream(data, index);
     const active = stream === state.selectedStreamUrl || index === state.selectedStreamIndex;
     return `
-      <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}">
+      <button class="stream-item ${active ? 'active' : ''}" data-stream-index="${index}" data-media-index="${mediaIndex ?? ''}">
         <div class="stream-item-title">
           <span>${shouldCollapseToBestOnly(data?.source_url, data) ? '最高画质' : `视频 ${index + 1}`}</span>
           <span>${active ? '当前选中' : '点击预览'}</span>
@@ -561,9 +555,11 @@ function applyParseData(data) {
   if (preferredIndex !== null && displayData?.streams?.[preferredIndex]) {
     state.selectedStreamIndex = preferredIndex;
     state.selectedStreamUrl = displayData.streams[preferredIndex];
+    state.selectedMediaIndex = getMediaIndexForStream(displayData, preferredIndex);
   } else {
     state.selectedStreamIndex = null;
     state.selectedStreamUrl = null;
+    state.selectedMediaIndex = null;
   }
   syncSuggestedFilename(displayData);
   renderStreamList(displayData);
@@ -575,6 +571,7 @@ async function parseUrl() {
   try {
     state.selectedStreamIndex = null;
     state.selectedStreamUrl = null;
+    state.selectedMediaIndex = null;
     renderStreamList(state.latestParseData || null);
 
     const payload = collect();
@@ -602,6 +599,7 @@ async function selectStream(index) {
   if (!state.latestParseData?.streams?.[index]) return;
   state.selectedStreamIndex = index;
   state.selectedStreamUrl = state.latestParseData.streams[index];
+  state.selectedMediaIndex = getMediaIndexForStream(state.latestParseData, index);
   renderStreamList(state.latestParseData);
   try {
     setStatus(`加载视频 ${index + 1} 预览…`, 'loading');
@@ -648,7 +646,6 @@ async function saveConfig() {
     const wecomSecretInput = $('cfg_wecom_secret')?.value.trim();
     const wecomTokenInput = $('cfg_wecom_token')?.value.trim();
     const wecomAesInput = $('cfg_wecom_encoding_aes_key')?.value.trim();
-    const wecomForwardTokenInput = $('cfg_wecom_forward_token')?.value.trim();
     const data = await api('/api/config', {
       default_proxy: $('cfg_proxy')?.value.trim() || '',
       auto_retry_enabled: Boolean($('cfg_auto_retry_enabled')?.checked),
@@ -664,8 +661,6 @@ async function saveConfig() {
       wecom_token: wecomTokenInput === '' ? '__KEEP__' : wecomTokenInput,
       wecom_encoding_aes_key: wecomAesInput === '' ? '__KEEP__' : wecomAesInput,
       wecom_callback_url: $('cfg_wecom_callback_url')?.value.trim() || '',
-      wecom_forward_url: $('cfg_wecom_forward_url')?.value.trim() || '',
-      wecom_forward_token: wecomForwardTokenInput === '' ? '__KEEP__' : wecomForwardTokenInput,
     });
     applyConfigToForm(data);
     showConfigSummary(data);

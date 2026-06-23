@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>保存页面图片</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      width: 360px;
+      padding: 12px;
+      margin: 0;
+      color: #222;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+    .desc {
+      font-size: 12px;
+      color: #666;
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+    input, button, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 8px;
+      padding: 9px;
+      border-radius: 8px;
+      border: 1px solid #d9d9d9;
+    }
+    button {
+      cursor: pointer;
+      background: #fff;
+    }
+    button.primary {
+      background: #1677ff;
+      color: #fff;
+      border-color: #1677ff;
+      font-weight: 700;
+    }
+    .btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .config-box {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 8px;
+      background: #f7f9fc;
+      border: 1px solid #e5eaf3;
+    }
+    .config-box summary {
+      cursor: pointer;
+      font-size: 12px;
+      color: #334;
+      font-weight: 700;
+      user-select: none;
+    }
+    .config-tip {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #667;
+      line-height: 1.5;
+    }
+    #log {
+      margin-top: 10px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      color: #333;
+      max-height: 280px;
+      overflow: auto;
+      background: #f6f6f6;
+      padding: 8px;
+      border-radius: 8px;
+      line-height: 1.5;
+    }
+    #fallbackBox {
+      margin-top: 10px;
+      display: none;
+    }
+    #fallbackBox.active {
+      display: block;
+    }
+    #fallbackTitle {
+      font-size: 12px;
+      color: #555;
+      margin-top: 2px;
+    }
+    #fallbackText {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      min-height: 110px;
+      resize: vertical;
+      white-space: pre;
+    }
+    .mini-tip {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #777;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <h3>保存当前页内容图</h3>
+  <div class="desc">
+    适合你已经把页面打开、图片也已经解密/显示出来的场景。<br />
+    插件优先扫描正文区/主展示区里的图片，并优先保留 tu.* 图片源链接。<br />
+    插件会扫描当前页面内容图、优先 tu.*，支持导出链接，并可直接推送到 mt 下载。
+  </div>
+
+  <label>图片子目录名（当前用于导出/预留 mt 子目录）</label>
+  <input id="folder" type="text" value="my-images" placeholder="例如：thread-3420892" />
+
+  <details class="config-box">
+    <summary>mt 接口配置</summary>
+    <input id="mtBaseUrl" type="text" value="http://127.0.0.1:9151" placeholder="例如：http://192.168.1.10:9151" />
+    <input id="mtToken" type="password" value="" placeholder="可选：X-MT-Token" />
+    <div class="config-tip">这里填写 mt 地址和可选 token；点击下面按钮会直接把扫描结果推送到 mt。</div>
+  </details>
+
+  <div class="btn-row">
+    <button id="scanBtn">先扫描</button>
+    <button id="exportBtn">导出链接</button>
+  </div>
+  <button id="saveBtn" class="primary">扫描并推送到 mt</button>
+
+  <div id="fallbackBox">
+    <div id="fallbackTitle">兜底内容（会自动复制到剪贴板）</div>
+    <textarea id="fallbackText" spellcheck="false" readonly></textarea>
+    <button id="copyFallbackBtn">再次复制兜底内容</button>
+    <div class="mini-tip">兜底里会同时给出纯链接列表和 wget/curl 脚本，至少能一把拿走全部正确链接。</div>
+  </div>
+
+  <div id="log">等待执行...</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

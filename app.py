@@ -198,93 +198,8 @@ def get_wecom_client(cfg: dict, *, api_base_url: str | None = None) -> WeComClie
     )
 
 
-def get_wecom_forward_url(cfg: dict | None = None) -> str:
-    active_cfg = cfg or load_config()
-    return str(active_cfg.get("wecom_forward_url") or os.getenv("WECOM_FORWARD_URL") or "").strip().rstrip("/")
-
-
-def get_wecom_forward_token(cfg: dict | None = None) -> str:
-    active_cfg = cfg or load_config()
-    return str(active_cfg.get("wecom_forward_token") or os.getenv("WECOM_FORWARD_TOKEN") or "").strip()
-
-
-def is_wecom_forward_enabled(cfg: dict | None = None) -> bool:
-    return bool(get_wecom_forward_url(cfg))
-
-
-def is_wecom_forward_proxy_url(forward_url: str | None) -> bool:
-    value = str(forward_url or "").strip()
-    if not value:
-        return False
-    try:
-        parts = urlsplit(value)
-    except Exception:
-        return False
-    if not parts.scheme or not parts.netloc:
-        return False
-    path = (parts.path or "").rstrip("/")
-    return path in {"", "/cgi-bin/message/send", "/cgi-bin/gettoken"}
-
-
-def build_wecom_forward_payload(job: dict, kind: str, to_user: str, content: str) -> dict:
-    status = str(job.get("status") or "").strip().lower() or kind
-    return {
-        "kind": kind,
-        "job_id": str(job.get("id") or "").strip(),
-        "to_user": str(to_user or "").strip(),
-        "content": str(content or "").strip(),
-        "title": clean_wecom_text(job.get("title") or job.get("output")),
-        "status": status,
-        "error": clean_wecom_text(job.get("error") or ""),
-        "source_url": clean_wecom_text(job.get("source_url") or ""),
-        "platform": clean_wecom_text(job.get("platform") or ""),
-        "output": clean_wecom_text(job.get("output") or ""),
-        "status_text": clean_wecom_text(job.get("status_text") or ""),
-    }
-
-
-def send_wecom_forward_notification(job: dict, kind: str, to_user: str, content: str, cfg: dict | None = None) -> dict:
-    active_cfg = cfg or load_config()
-    forward_url = get_wecom_forward_url(active_cfg)
-    if not forward_url:
-        raise RuntimeError("WECOM_FORWARD_URL 未配置")
-
-    if is_wecom_forward_proxy_url(forward_url):
-        client = get_wecom_client(active_cfg, api_base_url=forward_url)
-        result = client.send_text(to_user, content)
-        data = {
-            "ok": True,
-            "route": "wxchat-proxy",
-            "msgid": result.get("msgid"),
-            "errcode": result.get("errcode", 0),
-            "errmsg": result.get("errmsg", "ok"),
-        }
-        print(f"[wecom-forward] wxchat proxy ok: kind={kind} job_id={job.get('id')} to={to_user} msgid={data.get('msgid')}")
-        return data
-
-    headers = {}
-    forward_token = get_wecom_forward_token(active_cfg)
-    if forward_token:
-        headers["X-Wecom-Forward-Token"] = forward_token
-    payload = build_wecom_forward_payload(job, kind, to_user, content)
-    resp = requests.post(
-        forward_url,
-        headers=headers or None,
-        json=payload,
-        timeout=20,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if not data.get("ok", True):
-        raise RuntimeError(data.get("detail") or str(data))
-    print(f"[wecom-forward] notify ok: kind={kind} job_id={payload['job_id']} to={to_user} msgid={data.get('msgid')}")
-    return data
-
-
 def send_wecom_job_notification(job: dict, kind: str, to_user: str, content: str) -> dict:
     cfg = load_config()
-    if is_wecom_forward_enabled(cfg):
-        return send_wecom_forward_notification(job, kind, to_user, content, cfg=cfg)
     return send_wecom_text(to_user, content)
 
 
@@ -384,11 +299,9 @@ def enrich_config_view(cfg: dict) -> dict:
     cfg["bilibili_cookies_exists"] = cfg["bilibilick_exists"]
     cfg["douyin_cookies_exists"] = cfg["douyinck_exists"]
     cfg["wecom_ready"] = is_wecom_ready(cfg)
-    cfg["wecom_forward_enabled"] = is_wecom_forward_enabled(cfg)
     cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
     cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
     cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
-    cfg["wecom_forward_token_masked"] = mask_secret(cfg.get("wecom_forward_token"))
     return cfg
 
 
@@ -536,8 +449,7 @@ def notify_wecom_job_status(job: dict, kind: str, feedback_builder):
     try:
         send_wecom_job_notification(claimed_job.copy(), kind, to_user, feedback_builder(claimed_job.copy()))
     except Exception as exc:
-        route = "forward" if is_wecom_forward_enabled() else "direct"
-        print(f"[wecom] job_{kind} notify failed: route={route} job_id={job_id} to={to_user} error={exc}")
+        print(f"[wecom] job_{kind} notify failed: job_id={job_id} to={to_user} error={exc}")
         finish_wecom_notification(job_id, kind, success=False)
         return
     finish_wecom_notification(job_id, kind, success=True)
@@ -555,6 +467,42 @@ def notify_wecom_job_failed(job: dict):
     notify_wecom_job_status(job, "failed", build_wecom_job_failed_feedback)
 
 
+def create_wecom_download_jobs(url: str, from_user: str) -> list[dict]:
+    platform = get_platform(url)
+    cfg = load_config()
+    proxy = resolve_request_proxy(url, None, cfg)
+
+    # 企业微信入口没有“选择第几个视频”的交互，X/Twitter 单帖多视频时默认全部接单。
+    # 否则旧逻辑只会创建一个任务，导致 4 视频帖子只下载 1 个。
+    if platform == "x":
+        cookies_path = resolve_site_cookies_path(url, cfg)
+        info = discover_stream(url, None, None, proxy, None, None, cookies_path)
+        media_entries = info.get("media_entries") or []
+        jobs_created: list[dict] = []
+        if media_entries:
+            base_title = info.get("title") or f"x-video-{uuid4().hex[:8]}"
+            for media_index, media_entry in enumerate(media_entries):
+                best_stream = media_entry.get("best_stream_url") or choose_stream_url(media_entry)
+                if not best_stream:
+                    continue
+                entry_streams = media_entry.get("streams") or []
+                best_index = next((i for i, stream in enumerate(entry_streams) if stream == best_stream), 0)
+                payload = DownloadPayload(
+                    url=url,
+                    output=base_title,
+                    stream_url=best_stream,
+                    stream_index=best_index,
+                    media_index=media_index,
+                    wecom_to_user=from_user,
+                )
+                jobs_created.append(create_download_job(payload))
+            if jobs_created:
+                return jobs_created
+
+    payload = DownloadPayload(url=url, wecom_to_user=from_user)
+    return [create_download_job(payload)]
+
+
 def handle_wecom_download_message(msg: dict):
     from_user = str(msg.get("FromUserName") or "").strip()
     content = str(msg.get("Content") or "").strip()
@@ -566,8 +514,9 @@ def handle_wecom_download_message(msg: dict):
         return
     platform = get_platform(url)
     try:
-        payload = DownloadPayload(url=url, wecom_to_user=from_user)
-        create_download_job(payload)
+        jobs_created = create_wecom_download_jobs(url, from_user)
+        if len(jobs_created) > 1:
+            send_wecom_text_async(from_user, f"{build_wecom_prefix(platform)} 已识别到 {len(jobs_created)} 个视频，已全部创建下载任务。")
     except Exception as exc:
         send_wecom_text_async(from_user, f"{build_wecom_prefix(platform)} 任务创建失败：{exc}")
 
@@ -701,14 +650,28 @@ def infer_extension_from_url(url: str, default: str = ".jpg") -> str:
     return default
 
 
-def build_image_output_name(base_name: str, index: int, total: int, image_url: str) -> str:
+def build_image_output_name(base_name: str, index: int, total: int, image_url: str, max_bytes: int = 150) -> str:
     ext = infer_extension_from_url(image_url, default='.jpg')
     suffix = f' - {index + 1}' if total > 1 else ''
-    return normalize_filename(f"{base_name}{suffix}{ext}")
+    candidate = f"{base_name}{suffix}{ext}"
+    result = normalize_filename(candidate, max_bytes=max_bytes)
+    # 如果 normalize 后比原候选短很多，说明被截断了，需要确保最终不超过 max_bytes
+    if len(result.encode("utf-8")) > max_bytes:
+        stem = Path(result).stem
+        suffix_part = Path(result).suffix
+        # 进一步缩短 stem
+        reserved = 5
+        max_stem = max(1, max_bytes - len(suffix_part.encode("utf-8")) - reserved)
+        while stem and len(stem.encode("utf-8")) > max_stem:
+            stem = stem[:-1].rstrip(" ._")
+        if not stem:
+            stem = "img"
+        result = f"{stem}{suffix_part}"
+    return result
 
 
-def allocate_output_name(suggested_name: str, download_dir: Path | None = None) -> str:
-    normalized = normalize_filename(suggested_name)
+def allocate_output_name(suggested_name: str, download_dir: Path | None = None, max_bytes: int = 150) -> str:
+    normalized = normalize_filename(suggested_name, max_bytes=max_bytes)
     candidate = Path(normalized)
     stem = candidate.stem or "output"
     suffix = candidate.suffix or ".mp4"
@@ -728,7 +691,19 @@ def allocate_output_name(suggested_name: str, download_dir: Path | None = None) 
     final_name = f"{stem}{suffix}"
     index = 1
     while final_name in taken_names:
-        final_name = f"{stem} ({index}){suffix}"
+        # 计算添加 (index) 后的字节长度
+        test_name = f"{stem} ({index}){suffix}"
+        if len(test_name.encode("utf-8")) > max_bytes:
+            # 超出限制，缩短 stem 再试
+            reserved = 5 + len(f" ({index})")
+            max_stem = max(1, max_bytes - len(suffix.encode("utf-8")) - reserved)
+            short_stem = stem
+            while short_stem and len(short_stem.encode("utf-8")) > max_stem:
+                short_stem = short_stem[:-1].rstrip(" ._")
+            if not short_stem:
+                short_stem = "out"
+            test_name = f"{short_stem} ({index}){suffix}"
+        final_name = test_name
         index += 1
     return final_name
 
@@ -738,13 +713,15 @@ def build_suggested_output_name(display_title: str | None, fallback_prefix: str 
     return normalize_filename(base_name)
 
 
-def sanitize_picture_subdir_name(name: str | None) -> str:
+def sanitize_picture_subdir_name(name: str | None, max_bytes: int = 150) -> str:
     value = str(name or "").strip()
     value = re.sub(r"[\/]+", "_", value)
     value = re.sub(r"[^0-9A-Za-z一-鿿._ -]+", "_", value)
     value = re.sub(r"\s+", "_", value)
     value = re.sub(r"_+", "_", value).strip("._ ")
-    return value[:120] or f"photo-{uuid4().hex[:8]}"
+    while value and len(value.encode("utf-8")) > max_bytes:
+        value = value[:-1].rstrip("._ ")
+    return value or f"photo-{uuid4().hex[:8]}"
 
 
 def resolve_picture_subdir_name(page_title: str | None, suggested_subdir: str | None, page_host: str | None = None) -> str:
@@ -892,7 +869,9 @@ async def run_in_executor(executor: ThreadPoolExecutor, func, *args, **kwargs):
     return await loop.run_in_executor(executor, func, *args)
 
 
-def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int = 60, stream: bool = False):
+def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int | None = None, stream: bool = False):
+    if timeout is None:
+        timeout = int(os.getenv("SAFE_REQUESTS_TIMEOUT", "60"))
     headers = build_headers(referer, user_agent)
     proxies = build_proxies(proxy)
     try:
@@ -954,6 +933,10 @@ def resolve_request_proxy(url: str | None, requested_proxy: str | None = None, c
 def resolve_download_mode(platform: str, stream_url: str | None, media_type: str = "video") -> str:
     if media_type == "image":
         return "image"
+    # X/Twitter 多视频场景里，一旦前端/后端已经锁定了具体 stream_url，
+    # 必须按这个流下载；否则走 yt-dlp 源链接会重新选择媒体，可能忽略用户选中的第 N 个视频。
+    if platform == "x" and stream_url:
+        return "hls" if is_m3u8_url(stream_url) else "direct"
     if platform in {"youtube", "bilibili", "x"}:
         return "ytdlp"
     if platform == "douyin":
@@ -1048,8 +1031,6 @@ class ConfigPayload(BaseModel):
     wecom_token: str | None = CONFIG_KEEP_SENTINEL
     wecom_encoding_aes_key: str | None = CONFIG_KEEP_SENTINEL
     wecom_callback_url: str | None = ""
-    wecom_forward_url: str | None = ""
-    wecom_forward_token: str | None = CONFIG_KEEP_SENTINEL
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1180,6 +1161,9 @@ def direct_download(
         effective_referer = effective_referer or "https://www.iesdouyin.com/"
     headers = build_headers(effective_referer, effective_user_agent)
     proxies = build_proxies(proxy)
+    # 流式下载超时：默认 3600s（1 小时），可通过环境变量覆盖
+    _DIRECT_DOWNLOAD_TIMEOUT = int(os.getenv("DIRECT_DOWNLOAD_TIMEOUT", "3600"))
+    start_time = time.time()
     with requests.get(target_url, headers=headers, proxies=proxies, timeout=60, stream=True) as resp:
         resp.raise_for_status()
         total = int(resp.headers.get('content-length') or 0)
@@ -1190,6 +1174,9 @@ def direct_download(
                     raise RuntimeError('下载已取消')
                 if not chunk:
                     continue
+                # 每次读取前检查总超时
+                if time.time() - start_time > _DIRECT_DOWNLOAD_TIMEOUT:
+                    raise RuntimeError(f"直链下载超时（>{_DIRECT_DOWNLOAD_TIMEOUT}s）")
                 f.write(chunk)
                 downloaded += len(chunk)
                 if progress_callback:
@@ -1349,9 +1336,22 @@ def run_download_job(
                 schedule_retry(job_id, retry_delay)
 
 
-def build_video_output_name(base_name: str, media_index: int | None = None, total: int | None = None, ext: str = ".mp4") -> str:
+def build_video_output_name(base_name: str, media_index: int | None = None, total: int | None = None, ext: str = ".mp4", max_bytes: int = 150) -> str:
     suffix = f' - {media_index + 1}' if media_index is not None and (total or 0) > 1 else ''
-    return normalize_filename(f"{base_name}{suffix}{ext}")
+    candidate = f"{base_name}{suffix}{ext}"
+    result = normalize_filename(candidate, max_bytes=max_bytes)
+    # 如果 normalize 后比原候选短很多，说明被截断了，需要确保最终不超过 max_bytes
+    if len(result.encode("utf-8")) > max_bytes:
+        stem = Path(result).stem
+        suffix_part = Path(result).suffix
+        reserved = 5
+        max_stem = max(1, max_bytes - len(suffix_part.encode("utf-8")) - reserved)
+        while stem and len(stem.encode("utf-8")) > max_stem:
+            stem = stem[:-1].rstrip(" ._")
+        if not stem:
+            stem = "vid"
+        result = f"{stem}{suffix_part}"
+    return result
 
 
 def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
@@ -1406,6 +1406,14 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
             raise HTTPException(status_code=404, detail="未解析到可下载图片")
     elif not stream_url and not use_ytdlp_fallback:
         raise HTTPException(status_code=404, detail="未解析到可下载视频")
+
+    # 如果有 author，拼接到 title 前面
+    raw_title = info.get("title")
+    author = info.get("author")
+    if author and raw_title and author not in raw_title:
+        info["title"] = f"{author} - {raw_title}"
+    elif author and not raw_title:
+        info["title"] = author
 
     suggested_name = payload.output or info.get("title") or (f"{platform}-image-{uuid4().hex[:8]}" if media_type == "image" else f"video-{uuid4().hex[:8]}")
     output_candidate = build_image_output_name(suggested_name, 0, len(image_urls), image_urls[0]) if media_type == "image" else build_video_output_name(suggested_name, payload.media_index, len(media_entries) or 1)
@@ -1512,12 +1520,14 @@ def retry_job(job_id: str):
         payload = dict(source_job.get("request_payload") or {})
         source_job["retry_scheduled"] = False
 
-    if payload.get("kind") == "picture_push":
+    # 通过 pageUrl 字段判断是否为 picture_push 任务（PicturePushPayload 有 pageUrl，DownloadPayload 没有）
+    if payload.get("pageUrl"):
         new_job = create_picture_push_job(PicturePushPayload(**payload), retry_of=job_id)
     else:
         if not payload.get("url"):
             raise HTTPException(status_code=400, detail="原始任务缺少重试参数")
-        new_job = create_download_job(DownloadPayload(**payload, wecom_to_user=source_job.get("wecom_to_user")), retry_of=job_id)
+        # payload 中已包含 wecom_to_user（来自 original DownloadPayload.model_dump()），无需重复传参
+        new_job = create_download_job(DownloadPayload(**payload), retry_of=job_id)
     update_job(
         job_id,
         status="retried",
@@ -1806,11 +1816,6 @@ def set_config(payload: ConfigPayload):
         cfg["wecom_encoding_aes_key"] = aes_key
 
     cfg["wecom_callback_url"] = str(payload.wecom_callback_url or "").strip()
-    cfg["wecom_forward_url"] = str(payload.wecom_forward_url or "").strip()
-
-    forward_token = str(payload.wecom_forward_token or "").strip()
-    if forward_token != CONFIG_KEEP_SENTINEL:
-        cfg["wecom_forward_token"] = forward_token
 
     save_config(cfg)
     return enrich_config_view(cfg)

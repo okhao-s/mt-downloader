@@ -1,13 +1,15 @@
 services:
   mt-downloader:
-    image: okhao/mt:${MT_IMAGE_TAG:-latest}
+    image: mt-downloader:arm64
+    # image: okhao/mt:${MT_IMAGE_TAG:-latest}  # 原镜像不兼容 arm64，已改用本地构建
     container_name: mt-downloader
     ports:
       - "9151:8080"
     environment:
       - TZ=${TZ:-Asia/Shanghai}
-      - WECOM_FORWARD_URL=${WECOM_FORWARD_URL:-}
-      - WECOM_FORWARD_TOKEN=${WECOM_FORWARD_TOKEN:-}
+      # 以下企业微信相关环境变量已弃用：
+      # - WECOM_FORWARD_URL
+      # - WECOM_FORWARD_TOKEN
       - MT_API_TOKEN=${MT_API_TOKEN:-}
     volumes:
       - /root/docker/video:/downloads

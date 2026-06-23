@@ -5,13 +5,11 @@
 这次发布后的口径，重点就这几件事：
 
 - 主动通知现在只保留 `started / done / failed` 三类
-- 企业微信主动通知的正式方案是 **自建 relay / 代理转发**
+- 企业微信主动通知的正式方案是 **本地服务直连企业微信 API**
 - 本地服务继续负责 **企业微信回调、消息解析、交互回复、任务创建**
 - X / Twitter 下载已经补了几轮稳定性收口：超时保护、卡死保护、线程池隔离、短 TTL 探测缓存、`yt-dlp` 失败后的 fallback
 
-如果你之前看过旧 README，旧口径里那些“创建成功通知”“开发态中转测试说法”“本地直发优先”之类内容，现在都可以忽略。
-
-另外补一句：仓库里的测试现在按正式回归用例保留，不再保留一次性调试脚本。
+如果你之前看过旧 README，旧口径里那些“创建成功通知”“开发态中转测试说法”“本地直发优先”之类内容，现在都可以忽略。另外，转发功能（wecom_forward_url / wecom_forward_token）已从代码中移除，仅保留配置字段，主动通知统一走直连企业微信。仓库里的测试现在按正式回归用例保留，不再保留一次性调试脚本。
 
 ---
 
@@ -45,63 +43,9 @@
 - **被动入口**：企业微信回调到本地 `/api/wecom/callback`，由本地服务解析消息并创建任务
 - **主动通知**：任务状态变化后，发 `started / done / failed` 给企业微信用户
 
-### 4. 企业微信主动通知转发（正式方案）
-
-当前推荐把主动通知交给你自己的 relay/代理服务代发。
-
-支持两种转发方式：
-
-#### 方案 A：自定义 JSON relay
-
-本服务会把通知 POST 到你配置的 `wecom_forward_url`，请求头可带：
-
-- `X-Wecom-Forward-Token: <token>`
-
-请求体示例：
-
-```json
-{
-  "kind": "done",
-  "job_id": "abc123",
-  "to_user": "zhangsan",
-  "content": "[Douyin] 下载完成\n文件：short.mp4\n任务ID：abc123",
-  "title": "超短视频",
-  "status": "done",
-  "error": "",
-  "source_url": "https://example.com/v.mp4",
-  "platform": "douyin",
-  "output": "short.mp4",
-  "status_text": "下载完成"
-}
-```
-
-适合你自己做统一通知网关、审计、风控、二次路由。
-
-#### 方案 B：wxchat 一类企业微信 API 代理
-
-如果 `wecom_forward_url` 填的是代理根地址，或 `/cgi-bin/message/send` 这类地址，程序会自动识别为代理模式，走：
-
-- `/cgi-bin/gettoken`
-- `/cgi-bin/message/send`
-
-这类模式下：
-
-- 不发送自定义 JSON
-- 通常不需要 `wecom_forward_token`
-- 但 **本地仍然需要配置** `wecom_corp_id / wecom_agent_id / wecom_secret`
-- 因为 token 仍然是 mt-downloader 通过代理去换
-
-### 5. 本地直连企业微信
-
-还保留，但现在更适合作为：
-
-- 内网部署
-- 简单单实例
-- 临时兜底
-
-如果你有公网、转发、审计、复用等需求，优先用 relay/代理方案。
-
 ---
+
+## 当前通知语义
 
 ## 当前通知语义
 
@@ -132,8 +76,13 @@ docker run -d \
   --name mt-downloader \
   -p 9151:8080 \
   -e TZ=Asia/Shanghai \
-  #-e WECOM_FORWARD_URL= \
-  #-e WECOM_FORWARD_TOKEN= \
+  # 可选：企业微信配置（如启用）
+  # -e WECOM_CORP_ID= \
+  # -e WECOM_AGENT_ID= \
+  # -e WECOM_SECRET= \
+  # -e WECOM_ENCODING_AES_KEY= \
+  # -e WECOM_CALLBACK_URL= \
+  # -e MT_API_TOKEN= \
   -v /root/docker/video:/downloads \
   -v $(pwd)/data:/app/data \
   --restart unless-stopped \
@@ -312,34 +261,13 @@ https://你的域名/api/wecom/callback
 
 ## 2. 主动通知
 
-推荐配置：
+当前主动通知统一通过本地服务直接调用企业微信 API 发送。
 
-- `wecom_forward_url`：填你的 relay/代理地址
-- `wecom_forward_token`：如果你的 relay 需要鉴权，就填
+配置同企业微信回调所需的核心参数即可（`wecom_corp_id`、`wecom_agent_id`、`wecom_secret`、`wecom_encoding_aes_key`）。
 
-环境变量也可作为兜底：
+拓扑：
 
-- `WECOM_FORWARD_URL`
-- `WECOM_FORWARD_TOKEN`
-
-### 推荐拓扑
-
-```text
-企业微信用户
-   -> 企业微信回调
-   -> mt-downloader 本地 /api/wecom/callback
-   -> 本地创建任务
-   -> 任务状态变化
-   -> mt-downloader POST 到你的 relay/代理
-   -> relay/代理 代发企业微信主动通知
-```
-
-这个拓扑的好处：
-
-- 主动通知和业务入口解耦
-- 方便做公网暴露控制
-- 方便多服务统一通知
-- 方便做鉴权、日志、审计、重试
+- 本地服务创建任务 → 状态变化 → 直接调用企业微信 API → 用户收到通知
 
 ---
 
@@ -357,7 +285,7 @@ https://你的域名/api/wecom/callback
 
 1. 配好企业微信参数
 2. 配好回调 URL
-3. 配好主动通知 relay/代理（推荐）
+3. 配好企业微信直连通知
 4. 给应用发送带链接的消息
 5. 本地服务创建任务
 6. 用户收到 `started / done / failed` 通知
@@ -381,23 +309,13 @@ https://你的域名/api/wecom/callback
 
 ### 1. 企业微信主动通知没发出去
 
-先看你走的是哪条路：
-
-- relay JSON
-- wxchat 代理
-- 本地直连
+当前主动通知走本地直连企业微信 API。
 
 排查建议：
 
-1. 看应用设置里 `wecom_forward_url` 是否真的保存成功
-2. 如果 relay 要鉴权，确认 `wecom_forward_token` 是否正确
-3. 如果走代理模式，确认代理地址是否填对
-4. 如果走 wxchat 代理，确认本地 `corp_id / agent_id / secret` 仍然已配置
-5. 查容器日志里是否有：
-   - `[wecom-forward]`
-   - `[wecom] job_started notify failed`
-   - `[wecom] job_done notify failed`
-   - `[wecom] job_failed notify failed`
+1. 在设置页确认企业微信参数（CorpID、AgentID、Secret、EncodingAESKey）是否完整且已保存
+2. 查容器日志是否有 `[wecom] job_* notify` 相关报错
+3. 检查机器能否正常访问企业微信 API 端点
 
 ### 2. 企业微信回调失败
 

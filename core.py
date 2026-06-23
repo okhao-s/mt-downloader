@@ -174,6 +174,8 @@ def detect_platform(url: Optional[str]) -> str:
         "douyinpic.com/",
     ]):
         return "douyin"
+    if "xchina.co" in value or "xchina.download" in value:
+        return "xchina"
     return "generic"
 
 
@@ -331,6 +333,23 @@ def extract_title_from_html(html: str) -> Optional[str]:
     return None if is_noise_title(chosen) else chosen
 
 
+def extract_xchina_author(html: str) -> Optional[str]:
+    # 从 xchina 视频页面提取作者名（模特）
+    # 优先匹配 <a class="model-item">作者</a>
+    m = re.search(r'<a[^>]*class=["\'][^"\']*model-item[^"\']*["\'][^>]*>([^<]+)</a>', html, re.IGNORECASE)
+    if m:
+        author = m.group(1).strip()
+        if author:
+            return author
+    # 后备：匹配 <div class="model-item">作者</div>
+    m = re.search(r'<div class="model-item"[^>]*>([^<]+)</div>', html, re.IGNORECASE)
+    if m:
+        author = m.group(1).strip()
+        if author:
+            return author
+    return None
+
+
 def extract_m3u8_from_html(html: str):
     patterns = [
         r'https?://[^"\'\s>]+\.m3u8(?:\?[^"\'\s>]*)?',
@@ -478,6 +497,9 @@ def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[
     streams = extract_m3u8_from_html(html)
     stream_options = [{"url": s, "source": "html"} for s in streams]
     title = extract_title_from_html(html)
+    author = None
+    if 'xchina.co' in effective_url:
+        author = extract_xchina_author(html)
     if is_douyin:
         dy_streams, dy_options = extract_douyin_share_streams(html)
         streams = dedupe_keep_order(streams + dy_streams)
@@ -487,6 +509,7 @@ def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[
         "streams": streams,
         "stream_options": stream_options,
         "title": title,
+        "author": author,
     }
 
 
@@ -555,7 +578,17 @@ def extract_x_images_from_graphql_payload(payload: dict) -> dict:
 
 
 def extract_x_streams_from_graphql_payload(payload: dict) -> dict:
-    result = {"title": None, "thumbnail": None, "streams": [], "stream_options": [], "media_entries": []}
+    result = {"title": None, "thumbnail": None, "author": None, "streams": [], "stream_options": [], "media_entries": []}
+
+    # 提取作者/用户名
+    core_result = dig_first(payload, lambda x: isinstance(x, dict) and isinstance(x.get('core'), dict) and isinstance(x.get('core').get('user_results'), dict)) or {}
+    user_results = (core_result.get('core') or {}).get('user_results') or {}
+    user_info = user_results.get('result') or {}
+    legacy_user = user_info.get('legacy') or {}
+    if legacy_user.get('name'):
+        result['author'] = legacy_user['name']
+    elif legacy_user.get('screen_name'):
+        result['author'] = f"@{legacy_user['screen_name']}"
 
     legacy = dig_first(payload, lambda x: isinstance(x, dict) and isinstance(x.get('extended_entities'), dict)) or {}
     extended = legacy.get('extended_entities') or {}
@@ -1338,12 +1371,14 @@ def try_x_fallback_streams(url: str, info: dict, referer: Optional[str] = None, 
                     info['media_entries'] = gql_media_entries
                 info['title'] = info.get('title') or gql_info.get('title')
                 info['thumbnail'] = info.get('thumbnail') or gql_info.get('thumbnail')
+                info['author'] = info.get('author') or gql_info.get('author')
                 extractor = 'x-graphql'
             if gql_images:
                 extra_images.extend(gql_images)
                 extra_image_options.extend(gql_image_options)
                 info['title'] = info.get('title') or gql_images_info.get('title')
                 info['thumbnail'] = info.get('thumbnail') or gql_images_info.get('thumbnail')
+                info['author'] = info.get('author') or gql_info.get('author')
                 extractor = extractor or 'x-graphql'
         except Exception as gql_exc:
             info['errors'].append(f"x-graphql fallback 失败：{gql_exc}")
@@ -1440,6 +1475,8 @@ def _discover_stream_uncached(
         streams = page.get("streams") or []
         if page.get("title"):
             info["title"] = page["title"]
+        if page.get("author"):
+            info["author"] = page["author"]
         if streams:
             apply_stream_results(
                 info,
@@ -1467,6 +1504,10 @@ def _discover_stream_uncached(
     if meta is not None:
         info["title"] = meta.get("title") or info.get("title")
         info["thumbnail"] = meta.get("thumbnail")
+        # 从 yt-dlp 元数据提取作者/上传者
+        uploader = meta.get("uploader") or meta.get("channel") or meta.get("creator") or None
+        if uploader:
+            info["author"] = uploader
 
         extra_streams, extra_options, media_entries = extract_platform_streams(platform, meta)
         if platform == "x":

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Save Current Page Images",
+  "version": "1.1.0",
+  "description": "Scan visible images on the current page, prioritize tu.* content images, export links, and push payload to mt.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "declarativeNetRequest",
+    "tabs",
+    "clipboardWrite",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
