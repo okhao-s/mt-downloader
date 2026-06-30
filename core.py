@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import uuid
 import re
 import subprocess
 import threading
@@ -12,6 +13,92 @@ from typing import Optional
 from urllib.parse import quote, urljoin, urlparse
 
 import requests
+
+
+# ── FlareSolverr Client ──────────────────────────────────────────────
+# 当 requests/curl 遇到 Cloudflare 盾时，回退到 flaresolverr 跳盾解析。
+
+_FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191").rstrip("/")
+_FLARESOLVERR_ENABLED = os.getenv("FLARESOLVERR_ENABLED", "true").lower() in ("1", "true", "yes")
+_FLARESOLVERR_TIMEOUT = int(os.getenv("FLARESOLVERR_TIMEOUT", "60"))
+
+
+def _resolve_flare_config():
+    """从配置文件读取 flaresolverr 设置，优先于环境变量。"""
+    try:
+        cfg = load_config()
+        enabled = cfg.get("flaresolverr_enabled")
+        if enabled is None:
+            enabled = _FLARESOLVERR_ENABLED
+        elif isinstance(enabled, str):
+            enabled = enabled.lower() in ("1", "true", "yes")
+        url = cfg.get("flaresolverr_url") or os.getenv("FLARESOLVERR_URL", "http://localhost:8191")
+        timeout = cfg.get("flaresolverr_timeout") or _FLARESOLVERR_TIMEOUT
+        return bool(enabled), url.rstrip("/") if url else "", int(timeout)
+    except Exception:
+        return _FLARESOLVERR_ENABLED, _FLARESOLVERR_URL, _FLARESOLVERR_TIMEOUT
+
+
+class FlareSolverrClient:
+    """轻量级 FlareSolverr API 客户端。"""
+
+    @staticmethod
+    def solve(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> Optional[str]:
+        """
+        通过 flaresolverr 解析受 Cloudflare 保护的页面，返回 HTML 正文。
+        失败返回 None。
+        """
+        enabled, flare_url, timeout = _resolve_flare_config()
+        if not enabled or not flare_url:
+            return None
+
+        payload = {
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": 60000,
+        }
+        if referer:
+            payload["referrer"] = referer
+        if user_agent:
+            payload["userAgent"] = user_agent
+        if proxy:
+            payload["proxy"] = {"url": proxy}
+
+        try:
+            resp = requests.post(
+                f"{flare_url}/v1",
+                json=payload,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            status = data.get("status")
+            if status != "ok":
+                return None
+            solution = data.get("solution") or {}
+            # 优先返回解析后的 HTML
+            return solution.get("response") or solution.get("url")
+        except Exception as exc:
+            print(f"[flaresolverr] solve failed: {exc}")
+            return None
+
+    @staticmethod
+    def is_cf_shield(html: str) -> bool:
+        """
+        检测 HTML 是否为 Cloudflare 挑战页。
+        常见特征：cf-challenge、__cfduid、cf-ray、"Sorry, you have been blocked"
+        """
+        if not html:
+            return False
+        lower = html.lower()
+        indicators = [
+            "cloudflare", "cf-challenge", "__cfduid", "cf-ray",
+            "sorry, you have been blocked", "see cloudflare performance & security solutions",
+            "checking your browser before accessing", "ddos protection by cloudflare",
+            "ray ID:", "cloudflare rings",
+        ]
+        return any(ind in lower for ind in indicators)
+
 
 CONFIG_PATH = Path(os.getenv("APP_CONFIG_PATH", "/app/data/config.json"))
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
@@ -388,10 +475,18 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
         resp.raise_for_status()
         html = resp.text or ""
         if html.strip():
+            # 检测到 CF 盾 → 回退 flaresolverr
+            if FlareSolverrClient.is_cf_shield(html):
+                print(f"[fetch_webpage_html] CF shield detected, retrying via flaresolverr: {url}")
+                cf_html = FlareSolverrClient.solve(url, referer, user_agent, proxy)
+                if cf_html:
+                    return cf_html
+                print("[fetch_webpage_html] flaresolverr fallback failed, returning original HTML")
             return html
     except Exception:
         pass
 
+    # requests 失败 → 尝试 curl
     cmd = ["curl", "-L", "--max-time", "30"]
     if user_agent:
         cmd += ["-A", user_agent]
@@ -404,7 +499,14 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
     cmd.append(url)
     proc = subprocess.run(cmd, capture_output=True, text=True, errors="ignore")
     if proc.returncode == 0 and proc.stdout.strip():
-        return proc.stdout
+        curl_html = proc.stdout
+        # curl 也检测 CF 盾
+        if FlareSolverrClient.is_cf_shield(curl_html):
+            print(f"[fetch_webpage_html] CF shield detected (curl), retrying via flaresolverr: {url}")
+            cf_html = FlareSolverrClient.solve(url, referer, user_agent, proxy)
+            if cf_html:
+                return cf_html
+        return curl_html
     return html
 
 
@@ -765,6 +867,76 @@ def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "yt-dlp failed")
     return json.loads(proc.stdout)
+
+
+def extract_info_with_ytdlp_flare(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None, cookies_path: Optional[str] = None) -> Optional[dict]:
+    """
+    yt-dlp 探测的 flaresolverr 增强版。
+    当 yt-dlp 失败且疑似 CF 盾时，先用 flaresolverr 解析页面获得 cookies，
+    然后注入到 yt-dlp 的 --cookies 参数中重试。
+    """
+    # 先正常尝试
+    try:
+        return extract_info_with_ytdlp(url, referer, user_agent, proxy, cookies_path)
+    except Exception as exc:
+        error_text = str(exc).lower()
+        # 检查是否是 CF 相关问题
+        if not any(kw in error_text for kw in ["cloudflare", "cf-", "challenge", "blocked", "captcha", "access denied", "http error 403"]):
+            raise  # 不是 CF 问题，直接抛异常
+
+        # 通过 flaresolverr 获取有效 cookies
+        print(f"[ytdlp-flare] CF detected ({error_text[:100]}), trying flaresolverr: {url}")
+        enabled, flare_url, timeout = _resolve_flare_config()
+        if not enabled or not flare_url:
+            raise
+
+        try:
+            resp = requests.post(
+                f"{flare_url}/v1",
+                json={"cmd": "request.get", "url": url, "maxTimeout": 60000},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "ok":
+                raise RuntimeError(f"flaresolverr status: {data.get('message', 'unknown')}")
+        except Exception as e:
+            raise RuntimeError(f"flaresolverr failed: {e}") from e
+
+        # 从 flaresolverr 响应中提取 cookies
+        solution = data.get("solution") or {}
+        cookies_text = ""
+        # flaresolverr 可能返回 cookies 列表
+        for cookie in solution.get("cookies") or []:
+            name = cookie.get("name", "")
+            value = cookie.get("value", "")
+            domain = cookie.get("domain", "")
+            # Netscape 格式要求 domain 以 . 开头
+            if not domain.startswith("."):
+                domain = "." + domain
+            path = cookie.get("path", "/")
+            expires = cookie.get("expires", 0)
+            # flaresolverr 的 expires 可能是秒级时间戳，转为 Unix timestamp
+            if expires and expires < 10000000000:
+                expires = expires
+            cookies_text += f"{domain}\tTRUE\t{path}\tFALSE\t{expires}\t{name}\t{value}\n"
+
+        if not cookies_text:
+            # 后备：从 HTML 中尝试提取 Set-Cookie
+            html = solution.get("response") or ""
+            for m in re.finditer(r'Set-Cookie:\s*([^;]+)', html, re.IGNORECASE):
+                cookies_text += f".\tTRUE\t/\tFALSE\t0\t{m.group(1).split('=')[0].strip()}\t{m.group(1).strip()}\n"
+
+        if not cookies_text:
+            raise RuntimeError("flaresolverr returned no cookies")
+
+        # 写入临时 cookies 文件
+        tmp_cookies = Path("/tmp") / f"flare_{uuid.uuid4().hex[:8]}.txt"
+        tmp_cookies.write_text("# Netscape HTTP Cookie File\n" + cookies_text, encoding="utf-8")
+        try:
+            return extract_info_with_ytdlp(url, referer, user_agent, proxy, str(tmp_cookies))
+        finally:
+            tmp_cookies.unlink(missing_ok=True)
 
 
 def should_retry_youtube_without_cookies(error_text: str) -> bool:
@@ -1492,11 +1664,15 @@ def _discover_stream_uncached(
     platform = detect_platform(url)
     is_youtube = platform == "youtube"
     try:
-        meta = extract_info_with_ytdlp(url, referer, user_agent, proxy, cookies_path)
+        meta = extract_info_with_ytdlp_flare(url, referer, user_agent, proxy, cookies_path)
     except Exception as exc:
         if is_youtube and cookies_path and Path(cookies_path).exists() and should_retry_youtube_without_cookies(str(exc)):
             info["errors"].append(f"yt-dlp 探测失败（带 cookies）：{exc}")
-            meta = extract_info_with_ytdlp(url, referer, user_agent, proxy, None)
+            try:
+                meta = extract_info_with_ytdlp_flare(url, referer, user_agent, proxy, None)
+            except Exception as exc2:
+                info["errors"].append(f"yt-dlp 无 cookies 重试失败：{exc2}")
+                meta = None
         else:
             info["errors"].append(f"yt-dlp 探测失败：{exc}")
             meta = None

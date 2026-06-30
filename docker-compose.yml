@@ -1,12 +1,27 @@
 services:
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=${FLARESOLVERR_LOG_LEVEL:-info}
+      - LOG_HTML=${FLARESOLVERR_LOG_HTML:-false}
+      - TZ=${TZ:-Asia/Shanghai}
+    restart: unless-stopped
+    # MT-downloader 通过容器网络访问 flaresolverr:8191
+
   mt-downloader:
     image: mt-downloader:arm64
     # image: okhao/mt:${MT_IMAGE_TAG:-latest}  # 原镜像不兼容 arm64，已改用本地构建
     container_name: mt-downloader
+    depends_on:
+      - flaresolverr
     ports:
       - "9151:8080"
     environment:
       - TZ=${TZ:-Asia/Shanghai}
+      # FlareSolverr 地址（同一 docker network）
+      - FLARESOLVERR_URL=http://flaresolverr:8191
+      - FLARESOLVERR_ENABLED=${FLARESOLVERR_ENABLED:-true}
       # 以下企业微信相关环境变量已弃用：
       # - WECOM_FORWARD_URL
       # - WECOM_FORWARD_TOKEN

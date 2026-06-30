@@ -280,6 +280,16 @@ function applyConfigToForm(data = {}) {
   if ($('cfg_wecom_callback_url')) {
     $('cfg_wecom_callback_url').value = data?.wecom_callback_url || '';
   }
+  // FlareSolverr
+  if ($('cfg_flaresolverr_enabled') !== null) {
+    $('cfg_flaresolverr_enabled').checked = data?.flaresolverr_enabled !== false;
+  }
+  if ($('cfg_flaresolverr_url')) {
+    $('cfg_flaresolverr_url').value = data?.flaresolverr_url || 'http://flaresolverr:8191';
+  }
+  if ($('cfg_flaresolverr_timeout')) {
+    $('cfg_flaresolverr_timeout').value = data?.flaresolverr_timeout || 60;
+  }
   updateTwitterCookiesHint(data);
   updateYouTubeCookiesHint(data);
   updateBilibiliCookiesHint(data);
@@ -661,6 +671,10 @@ async function saveConfig() {
       wecom_token: wecomTokenInput === '' ? '__KEEP__' : wecomTokenInput,
       wecom_encoding_aes_key: wecomAesInput === '' ? '__KEEP__' : wecomAesInput,
       wecom_callback_url: $('cfg_wecom_callback_url')?.value.trim() || '',
+      // FlareSolverr
+      flaresolverr_enabled: Boolean($('cfg_flaresolverr_enabled')?.checked ?? true),
+      flaresolverr_url: $('cfg_flaresolverr_url')?.value.trim() || 'http://flaresolverr:8191',
+      flaresolverr_timeout: Number($('cfg_flaresolverr_timeout')?.value || 60),
     });
     applyConfigToForm(data);
     showConfigSummary(data);

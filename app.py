@@ -302,6 +302,10 @@ def enrich_config_view(cfg: dict) -> dict:
     cfg["wecom_secret_masked"] = mask_secret(cfg.get("wecom_secret"))
     cfg["wecom_token_masked"] = mask_secret(cfg.get("wecom_token"))
     cfg["wecom_encoding_aes_key_masked"] = mask_secret(cfg.get("wecom_encoding_aes_key"), keep=4)
+    # FlareSolverr
+    cfg.setdefault("flaresolverr_enabled", True)
+    cfg.setdefault("flaresolverr_url", os.getenv("FLARESOLVERR_URL", "http://flaresolverr:8191"))
+    cfg.setdefault("flaresolverr_timeout", int(os.getenv("FLARESOLVERR_TIMEOUT", "60")))
     return cfg
 
 
@@ -480,7 +484,13 @@ def create_wecom_download_jobs(url: str, from_user: str) -> list[dict]:
         media_entries = info.get("media_entries") or []
         jobs_created: list[dict] = []
         if media_entries:
-            base_title = info.get("title") or f"x-video-{uuid4().hex[:8]}"
+            raw_title = info.get("title") or f"x-video-{uuid4().hex[:8]}"
+            # 把 author 拼到 title 前面
+            author = info.get("author")
+            if author and author not in raw_title:
+                base_title = f"{author} - {raw_title}"
+            else:
+                base_title = raw_title
             for media_index, media_entry in enumerate(media_entries):
                 best_stream = media_entry.get("best_stream_url") or choose_stream_url(media_entry)
                 if not best_stream:
@@ -1031,6 +1041,10 @@ class ConfigPayload(BaseModel):
     wecom_token: str | None = CONFIG_KEEP_SENTINEL
     wecom_encoding_aes_key: str | None = CONFIG_KEEP_SENTINEL
     wecom_callback_url: str | None = ""
+    # FlareSolverr
+    flaresolverr_enabled: bool = True
+    flaresolverr_url: str | None = "http://flaresolverr:8191"
+    flaresolverr_timeout: int = 60
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1136,6 +1150,14 @@ async def parse_url(payload: ParsePayload):
     info["preview_url"] = "/api/preview.m3u8?" + "&".join(preview_parts) if chosen_stream else None
     info["stream_count"] = len(info.get("streams") or [])
     info["image_count"] = len(info.get("images") or [])
+    # 和 create_download_job 保持一致，把 author 拼到 title 前面
+    raw_title = info.get("title")
+    author = info.get("author")
+    if author and raw_title and author not in raw_title:
+        info["title"] = f"{author} - {raw_title}"
+    elif author and not raw_title:
+        info["title"] = author
+
     fallback_prefix = get_platform(input_url) or "video"
     if info.get("media_type") == "image":
         fallback_prefix = f"{fallback_prefix}-image"
@@ -1816,6 +1838,11 @@ def set_config(payload: ConfigPayload):
         cfg["wecom_encoding_aes_key"] = aes_key
 
     cfg["wecom_callback_url"] = str(payload.wecom_callback_url or "").strip()
+
+    # FlareSolverr
+    cfg["flaresolverr_enabled"] = bool(payload.flaresolverr_enabled)
+    cfg["flaresolverr_url"] = str(payload.flaresolverr_url or "").strip()
+    cfg["flaresolverr_timeout"] = max(10, int(payload.flaresolverr_timeout or 60))
 
     save_config(cfg)
     return enrich_config_view(cfg)

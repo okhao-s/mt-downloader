@@ -227,6 +227,23 @@
             <input id="cfg_wecom_callback_url" placeholder="https://你的域名/api/wecom/callback">
           </label>
 
+          <div class="settings-section-title field-wide">Cloudflare 跳盾（FlareSolverr）</div>
+
+          <label class="field field-wide">
+            <span>启用 FlareSolverr</span>
+            <input id="cfg_flaresolverr_enabled" type="checkbox" {% if config.flaresolverr_enabled is not none %}{% if config.flaresolverr_enabled %}checked{% endif %}{% else %}checked{% endif %}>
+            <small class="field-hint">遇到 Cloudflare 盾时自动通过 flaresolverr 解析。</small>
+          </label>
+
+          <label class="field field-wide">
+            <span>FlareSolverr 地址</span>
+            <input id="cfg_flaresolverr_url" value="{{ config.flaresolverr_url or 'http://flaresolverr:8191' }}" placeholder="http://flaresolverr:8191">
+          </label>
+
+          <label class="field">
+            <span>超时（秒）</span>
+            <input id="cfg_flaresolverr_timeout" type="number" min="10" value="{{ config.flaresolverr_timeout or 60 }}">
+          </label>
           
         </div>
         <div class="action-row">
