@@ -424,6 +424,10 @@ function isBilibiliUrl(url = '') {
   return /https?:\/\/(?:www\.)?(?:bilibili\.com|b23\.tv)\//i.test(String(url || ''));
 }
 
+function isXchinaUrl(url = '') {
+  return /https?:\/\/(?:www\.)?(?:xchina\.co|xchina\.download)\//i.test(String(url || ''));
+}
+
 function shouldCollapseToBestOnly(url = '', data = null) {
   if (isXUrl(url) && Number(data?.media_entries?.length || 0) > 1) return false;
   return isXUrl(url) || isYouTubeUrl(url) || isBilibiliUrl(url);
@@ -586,6 +590,12 @@ async function parseUrl() {
 
     const payload = collect();
     if (!payload.url) throw new Error('先贴链接，别让我猜你脑内 URL。');
+
+    // xchina 站点需要 Referer 才能下载 TS 分片，自动补全
+    if (isXchinaUrl(payload.url) && !payload.referer) {
+      $('referer').value = 'https://xchina.co/';
+      payload.referer = 'https://xchina.co/';
+    }
 
     setStatus('解析中…', 'loading');
     const data = await api('/api/parse', payload);
