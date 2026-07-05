@@ -1,0 +1,11 @@
+fastapi==0.138.0
+uvicorn==0.49.0
+requests==2.34.2
+yt-dlp==2026.6.9
+curl-cffi==0.15.0
+brotli==1.2.0
+certifi==2026.6.17
+websockets==16.0
+jinja2==3.1.6
+python-multipart==0.0.32
+pycryptodome==3.23.0

@@ -261,7 +261,7 @@ def detect_platform(url: Optional[str]) -> str:
         "douyinpic.com/",
     ]):
         return "douyin"
-    if "xchina.co" in value or "xchina.download" in value:
+    if "xchina" in value:
         return "xchina"
     return "generic"
 
@@ -600,7 +600,7 @@ def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[
     stream_options = [{"url": s, "source": "html"} for s in streams]
     title = extract_title_from_html(html)
     author = None
-    if 'xchina.co' in effective_url:
+    if 'xchina' in effective_url:
         author = extract_xchina_author(html)
     if is_douyin:
         dy_streams, dy_options = extract_douyin_share_streams(html)
@@ -851,8 +851,12 @@ def extract_info_with_ytdlp(url: str, referer: Optional[str] = None, user_agent:
         "--socket-timeout",
         str(YTDLP_SOCKET_TIMEOUT),
     ]
-    if referer:
-        cmd += ["--add-header", f"Referer:{referer}"]
+    # Auto-set Referer for xchina if not provided
+    effective_referer = referer
+    if 'xchina' in (url or '').lower():
+        effective_referer = effective_referer or 'https://www.xchina.co/'
+    if effective_referer:
+        cmd += ["--add-header", f"Referer:{effective_referer}"]
     if user_agent:
         cmd += ["--add-header", f"User-Agent:{user_agent}"]
     if proxy:
@@ -996,8 +1000,12 @@ def download_with_ytdlp(
         ]
         if force_mp4:
             cmd += ["--merge-output-format", "mp4", "--recode-video", "mp4"]
-        if referer:
-            cmd += ["--add-header", f"Referer:{referer}"]
+        # Auto-set Referer for xchina if not provided
+        effective_referer = referer
+        if 'xchina' in (url or '').lower():
+            effective_referer = effective_referer or 'https://www.xchina.co/'
+        if effective_referer:
+            cmd += ["--add-header", f"Referer:{effective_referer}"]
         if user_agent:
             cmd += ["--add-header", f"User-Agent:{user_agent}"]
         if proxy:
@@ -1818,11 +1826,15 @@ def ffmpeg_download(
     should_cancel=None,
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    effective_referer = referer
+    # Auto-set Referer for platforms that require it
+    if 'xchina' in (stream_url or '').lower():
+        effective_referer = effective_referer or 'https://www.xchina.co/'
     header_lines = []
     if user_agent:
         header_lines.append(f"User-Agent: {user_agent}")
-    if referer:
-        header_lines.append(f"Referer: {referer}")
+    if effective_referer:
+        header_lines.append(f"Referer: {effective_referer}")
 
     cmd = ["ffmpeg", "-y", "-loglevel", "warning"]
     if proxy:
@@ -1856,25 +1868,27 @@ def ffmpeg_download(
         "speed": "",
         "bitrate": "",
     }
+    start_time = time.time()
+    last_update_time = time.time()
+    _SLIDING_TIMEOUT = int(os.getenv("FFMPEG_SLIDING_TIMEOUT", "180"))  # 3 分钟无更新则超时
 
     def emit_progress():
         if not progress_callback:
             return
         out_time_ms = int(stats.get("out_time_ms") or 0)
         total_size = int(stats.get("total_size") or 0)
-        elapsed_s = max(0.1, out_time_ms / 1000.0)
-        pseudo_progress = max(8, min(95, 8 + out_time_ms // 15_000_000))
+        elapsed_s = max(0.1, time.time() - start_time)
+        # Progress based on video time: every 30s of video = 1% progress
+        # This ensures the bar moves visibly even for long videos
+        pseudo_progress = max(8, min(95, 8 + out_time_ms // 30_000_000))
         parts = [f"视频进度 {out_time_ms / 1000000:.1f}s"]
         if total_size > 0:
             parts.append(f"已下载 {total_size / 1024 / 1024:.1f}MB")
-        # ffmpeg speed= 是编码倍速（如 1.50x），不是下载速度；用 total_size / elapsed 计算 MB/s
         if total_size > 0 and elapsed_s > 0:
             speed_mb = total_size / 1024 / 1024 / elapsed_s
             parts.append(f"下载速度 {speed_mb:.2f} MB/s")
         progress_callback(pseudo_progress, "正在下载… " + " · ".join(parts))
 
-    # ffmpeg 下载超时：默认 1800s（30 分钟），可通过环境变量覆盖
-    _FFMPEG_DOWNLOAD_TIMEOUT = int(os.getenv("FFMPEG_DOWNLOAD_TIMEOUT", "1800"))
 
     try:
         if process.stdout is not None:
@@ -1891,20 +1905,22 @@ def ffmpeg_download(
                     if key in stats:
                         stats[key] = value
                 if line.startswith("out_time_ms=") or line.startswith("total_size=") or line.startswith("bitrate=") or line.startswith("speed="):
+                    last_update_time = time.time()
                     emit_progress()
                 elif line == "progress=end":
                     if progress_callback:
                         progress_callback(99, "正在收尾封装…")
-        returncode = process.wait(timeout=_FFMPEG_DOWNLOAD_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        # 超时：先尝试优雅终止，再强制 kill
-        try:
-            process.terminate()
+        # 滑动超时：3分钟内没有进度更新才判定超时
+        while True:
+            ret = process.poll()
+            if ret is not None:
+                returncode = ret
+                break
+            if time.time() - last_update_time > _SLIDING_TIMEOUT:
+                process.terminate()
+                process.wait(timeout=5)
+                raise RuntimeError("ffmpeg 下载超时（3分钟无进度更新）")
             process.wait(timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            process.kill()
-            process.wait()
-        raise RuntimeError(f"ffmpeg 下载超时（>{_FFMPEG_DOWNLOAD_TIMEOUT}s）")
     except KeyboardInterrupt:
         process.terminate()
         process.wait()
@@ -1953,9 +1969,13 @@ def aggressive_hls_download(
     should_cancel=None,
     segment_workers: int | None = None,
 ):
+    effective_referer = referer
+    # Auto-set Referer for platforms that require it
+    if 'xchina' in (manifest_url or '').lower():
+        effective_referer = effective_referer or 'https://www.xchina.co/'
     manifest_resp = requests.get(
         manifest_url,
-        headers=build_headers(referer, user_agent),
+        headers=build_headers(effective_referer, user_agent),
         proxies=build_proxies(proxy),
         timeout=30,
     )
@@ -1981,7 +2001,7 @@ def aggressive_hls_download(
     downloaded_bytes = 0
     start_time = time.time()
     session = requests.Session()
-    session.headers.update(build_headers(referer, user_agent))
+    session.headers.update(build_headers(effective_referer, user_agent))
     session.proxies.update(build_proxies(proxy) or {})
 
     def fetch_one(index_url):
@@ -2101,6 +2121,10 @@ def build_media_proxy_url(proxy_prefix: str, target_url: str, referer: str | Non
     if parsed_target.netloc == "video.xchina.download" and parsed_target.path.startswith("/ts/"):
         target_url = parsed_target._replace(netloc="cdn.xchina.download").geturl()
         parsed_target = urlparse(target_url)
+    # Also handle upload.xchina.io CDN
+    if parsed_target.netloc == "upload.xchina.io":
+        # Keep as-is, but ensure Referer is set
+        pass
     filename = Path(parsed_target.path).name or "segment.bin"
     safe_name = quote(filename, safe='._-')
     params = [f"target={quote(target_url, safe=':/?&=%._-')}"]
