@@ -1178,13 +1178,16 @@ def direct_download(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_user_agent = user_agent
     effective_referer = referer
-    if get_platform(target_url) == "douyin":
+    platform = get_platform(target_url)
+    if platform == "douyin":
         effective_user_agent = effective_user_agent or "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
         effective_referer = effective_referer or "https://www.iesdouyin.com/"
+    elif platform == "xchina":
+        effective_referer = effective_referer or "https://www.xchina.co/"
     headers = build_headers(effective_referer, effective_user_agent)
     proxies = build_proxies(proxy)
     # 流式下载超时：默认 3600s（1 小时），可通过环境变量覆盖
-    _DIRECT_DOWNLOAD_TIMEOUT = int(os.getenv("DIRECT_DOWNLOAD_TIMEOUT", "3600"))
+    _DIRECT_DOWNLOAD_TIMEOUT = int(os.getenv("DIRECT_DOWNLOAD_TIMEOUT", "7200"))
     start_time = time.time()
     with requests.get(target_url, headers=headers, proxies=proxies, timeout=60, stream=True) as resp:
         resp.raise_for_status()

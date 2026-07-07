@@ -425,7 +425,7 @@ function isBilibiliUrl(url = '') {
 }
 
 function isXchinaUrl(url = '') {
-  return /https?:\/\/(?:www\.)?(?:xchina\.co|xchina\.download)\//i.test(String(url || ''));
+  return /https?:\/\/(?:www\.)?(?:xchina\.co|xchina\.download|upload\.xchina\.io|xchina\.io)\//i.test(String(url || ''));
 }
 
 function shouldCollapseToBestOnly(url = '', data = null) {
@@ -593,8 +593,8 @@ async function parseUrl() {
 
     // xchina 站点需要 Referer 才能下载 TS 分片，自动补全
     if (isXchinaUrl(payload.url) && !payload.referer) {
-      $('referer').value = 'https://xchina.co/';
-      payload.referer = 'https://xchina.co/';
+      $('referer').value = 'https://www.xchina.co/';
+      payload.referer = 'https://www.xchina.co/';
     }
 
     setStatus('解析中…', 'loading');
