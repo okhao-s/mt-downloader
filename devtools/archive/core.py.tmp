@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote, urljoin, urlparse, urlsplit
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 
@@ -512,38 +512,30 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
 
 def extract_twitter_fallback_streams(html: str) -> list[str]:
     patterns = [
-        # video.twimg.com (传统视频域)
         r'https?://video\.twimg\.com/[^"\'\s>]+\.(?:m3u8|mp4)(?:\?[^"\'\s>]*)?',
-        r'https?:\\/\\/video\.twimg\.com\\/.*?\.(?:m3u8|mp4)(?:[^"\\]*)?',
-        # pbs.twimg.com 的视频（e.g., /ext_tw_video/.../pu/vid/.../abcd.mp4）
-        r'https?://pbs\.twimg\.com/ext_tw_video/[^"\'\s>]+\.mp4(?:\?[^"\'\s>]*)?',
-        r'https?:\\/\\/pbs\.twimg\.com\\/ext_tw_video\\/.*?\.mp4(?:[^"\\]*)?',
-        # 通用 playbackUrl
+        r'https?:\\/\\/video\.twimg\.com\\/.*?\.(?:m3u8|mp4)(?:[^"\'\s>]*)?',
         r'"playbackUrl"\s*:\s*"(https?:\\/\\/video\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?)"',
-        # variants 块
         r'"video_info".*?"variants"\s*:\s*\[(.*?)\]',
     ]
     found = []
-    for pat in patterns[:4]:
+    for pat in patterns[:3]:
         for match in re.findall(pat, html, re.IGNORECASE):
             candidate = match if isinstance(match, str) else match[0]
             candidate = candidate.replace('\\/', '/')
             found.append(candidate)
 
-    variants_blocks = re.findall(patterns[4], html, re.IGNORECASE | re.DOTALL)
+    variants_blocks = re.findall(patterns[3], html, re.IGNORECASE | re.DOTALL)
     for block in variants_blocks:
         for url in re.findall(r'https?:\\/\\/video\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?', block, re.IGNORECASE):
             found.append(url.replace('\\/', '/'))
 
-    # 过滤有效视频域
     cleaned = []
     for candidate in found:
         if not isinstance(candidate, str):
             continue
-        if 'video.twimg.com/' in candidate or 'pbs.twimg.com/ext_tw_video/' in candidate:
-            cleaned.append(candidate)
+        if 'video.twimg.com/' in candidate or 'video.twimg.com/' in candidate:
+            cleaned.append(candidate.replace('video.twimg.com/', 'video.twimg.com/'))
     return dedupe_keep_order(cleaned)
-
 
 
 def extract_douyin_share_streams(html: str) -> tuple[list[str], list[dict]]:
@@ -1259,9 +1251,6 @@ def is_instagram_image_candidate(url: str | None) -> bool:
     value = str(url or '').lower()
     if not value:
         return False
-    # Exclude static assets and non-media resources
-    if 'static.cdninstagram.com' in value or '/rsrc.php/' in value:
-        return False
     return any(token in value for token in ('cdninstagram.com/', 'instagram.f', 'scontent-')) and any(ext in value for ext in ('.jpg', '.jpeg', '.png', '.webp'))
 
 
@@ -1271,54 +1260,38 @@ def normalize_instagram_media_url(url: str | None) -> Optional[str]:
 
 
 def extract_instagram_images(meta: dict) -> tuple[list[str], list[dict], list[dict]]:
-    # Collect candidate image URLs with dimensions and source
-    candidates = []
-    # Top-level thumbnails
+    images: list[str] = []
+    options: list[dict] = []
+    media_entries: list[dict] = []
+
+    def push(image_url: str | None, width=None, height=None, source: str = 'yt-dlp-instagram-image'):
+        normalized = normalize_instagram_media_url(image_url)
+        if not is_instagram_image_candidate(normalized) or normalized in images:
+            return
+        images.append(normalized)
+        option = {'url': normalized, 'source': source, 'type': 'image', 'width': width, 'height': height}
+        options.append(option)
+        media_entries.append({
+            'media_index': len(media_entries),
+            'entry_index': len(media_entries),
+            'media_key': None,
+            'thumbnail': normalized,
+            'media_type': 'image',
+            'streams': [],
+            'stream_options': [],
+            'best_stream_url': None,
+            'best_stream_option': None,
+            'images': [normalized],
+            'image_options': [option],
+        })
+
     thumbnails = meta.get('thumbnails') or []
     if isinstance(thumbnails, list):
         for item in thumbnails:
             if isinstance(item, dict):
-                url = item.get('url')
-                if url:
-                    candidates.append((url, item.get('width'), item.get('height'), 'yt-dlp-instagram-thumbnail'))
-    # Global thumbnail (may be same as one in the list, but will be deduped)
-    if meta.get('thumbnail'):
-        candidates.append((meta.get('thumbnail'), None, None, 'yt-dlp-instagram-thumbnail'))
-
-    if not candidates:
-        return [], [], []
-
-    # Normalize URLs and select the best by resolution area
-    best_url = None
-    best_option = None
-    best_area = -1
-    for url, width, height, source in candidates:
-        normalized = normalize_instagram_media_url(url)
-        if not is_instagram_image_candidate(normalized):
-            continue
-        area = (int(width or 0) * int(height or 0))
-        if area > best_area:
-            best_area = area
-            best_url = normalized
-            best_option = build_stream_option(normalized, {'width': width, 'height': height}, source=source)
-
-    if not best_url:
-        return [], [], []
-
-    media_entry = {
-        'media_index': 0,
-        'entry_index': 0,
-        'media_key': meta.get('id') or meta.get('display_id') or meta.get('webpage_url'),
-        'thumbnail': best_url,
-        'media_type': 'image',
-        'streams': [],
-        'stream_options': [],
-        'best_stream_url': None,
-        'best_stream_option': None,
-        'images': [best_url],
-        'image_options': [best_option],
-    }
-    return [best_url], [best_option], [media_entry]
+                push(item.get('url'), item.get('width'), item.get('height'), source='yt-dlp-instagram-thumbnail')
+    push(meta.get('thumbnail'), source='yt-dlp-instagram-thumbnail')
+    return dedupe_keep_order(images), dedupe_stream_options(options), media_entries
 
 
 def extract_instagram_images_from_html(html: str) -> dict:
@@ -1332,18 +1305,10 @@ def extract_instagram_images_from_html(html: str) -> dict:
         'media_entries': [],
     }
 
-    seen_bases = set()
-
     def push(image_url: str | None, source: str = 'instagram-meta-image'):
         normalized = normalize_instagram_media_url(image_url)
-        if not is_instagram_image_candidate(normalized):
+        if not is_instagram_image_candidate(normalized) or normalized in result['images']:
             return
-        # Deduplicate by base URL (without query/fragment) to discard size variants and duplicates
-        parsed = urlsplit(normalized)
-        base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        if base in seen_bases:
-            return
-        seen_bases.add(base)
         result['images'].append(normalized)
         option = {'url': normalized, 'source': source, 'type': 'image'}
         result['image_options'].append(option)

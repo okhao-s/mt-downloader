@@ -53,6 +53,31 @@ def _mask_wecom_value(value: str | None, head: int = 3, tail: int = 3) -> str:
     return f"{raw[:head]}***{raw[-tail:]}"
 
 
+def is_wecom_send_ready(cfg: dict) -> bool:
+    """检查是否配置好企业微信消息发送所需的凭据。
+
+    仅需：corp_id, agent_id, secret
+    """
+    return (
+        bool(cfg.get("wecom_enabled"))
+        and bool(cfg.get("wecom_corp_id"))
+        and bool(cfg.get("wecom_agent_id"))
+        and bool(cfg.get("wecom_secret"))
+    )
+
+
+def is_wecom_callback_ready(cfg: dict) -> bool:
+    """检查是否配置好企业微信回调（加解密）所需的凭据。
+
+    需：corp_id, agent_id, secret, token, encoding_aes_key
+    """
+    return (
+        is_wecom_send_ready(cfg)
+        and bool(cfg.get("wecom_token"))
+        and bool(cfg.get("wecom_encoding_aes_key"))
+    )
+
+
 class WeComCrypto:
     def __init__(self, token: str, encoding_aes_key: str, corp_id: str):
         self.token = str(token or "")

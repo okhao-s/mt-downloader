@@ -39,7 +39,7 @@ from core import (
     save_config,
     should_hint_bilibili_cookies,
 )
-from wecom import WeComClient, WeComCrypto, build_passive_text_reply
+from wecom import WeComClient, WeComCrypto, build_passive_text_reply, is_wecom_send_ready, is_wecom_callback_ready
 
 app = FastAPI(title="M3U8 Downloader")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -167,19 +167,14 @@ def mask_secret(value: str | None, keep: int = 3) -> str:
 
 
 def is_wecom_ready(cfg: dict) -> bool:
-    return bool(
-        cfg.get("wecom_enabled")
-        and cfg.get("wecom_corp_id")
-        and cfg.get("wecom_agent_id")
-        and cfg.get("wecom_secret")
-        and cfg.get("wecom_token")
-        and cfg.get("wecom_encoding_aes_key")
-    )
+    # 已拆分：请使用 is_wecom_send_ready / is_wecom_callback_ready。
+    # 保留此函数仅为短期兼容。
+    return is_wecom_callback_ready(cfg)
 
 
 def get_wecom_crypto(cfg: dict) -> WeComCrypto:
-    if not is_wecom_ready(cfg):
-        raise ValueError("企业微信配置不完整或未启用")
+    if not is_wecom_callback_ready(cfg):
+        raise ValueError("企业微信回调未配置完整（需要 token + encoding_aes_key）")
     return WeComCrypto(
         token=str(cfg.get("wecom_token") or ""),
         encoding_aes_key=str(cfg.get("wecom_encoding_aes_key") or ""),
@@ -188,8 +183,8 @@ def get_wecom_crypto(cfg: dict) -> WeComCrypto:
 
 
 def get_wecom_client(cfg: dict, *, api_base_url: str | None = None) -> WeComClient:
-    if not is_wecom_ready(cfg):
-        raise ValueError("企业微信配置不完整或未启用")
+    if not is_wecom_send_ready(cfg):
+        raise ValueError("企业微信发送未配置完整（需要 corp_id、agent_id、secret）")
     return WeComClient(
         corp_id=str(cfg.get("wecom_corp_id") or ""),
         agent_id=str(cfg.get("wecom_agent_id") or "0"),
