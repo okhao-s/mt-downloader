@@ -154,6 +154,10 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     aes_key = str(cfg.get("wecom_encoding_aes_key") or "")
     cfg["wecom_encoding_aes_key"] = aes_key if not _keep_sentinel(aes_key) else cfg.get("wecom_encoding_aes_key", "")
     cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or "")
+    # Remove deprecated config keys (if any)
+    if "wecom_forward_token" in cfg:
+        logger.warning("Config key 'wecom_forward_token' is deprecated and will be ignored. Please remove it from config.json.")
+        cfg.pop("wecom_forward_token", None)
     return cfg
 
 
