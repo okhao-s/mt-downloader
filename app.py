@@ -1922,3 +1922,11 @@ async def upload_youtube_cookies(file: UploadFile = File(...)):
 @app.post("/api/upload/bilibili-cookies")
 async def upload_bilibili_cookies(file: UploadFile = File(...)):
     return await save_uploaded_cookie_file(file, BILIBILI_COOKIES_PATH, "bilibili_cookies_path", "bilibili_cookies_exists")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Gracefully shutdown thread pools on application exit."""
+    parse_executor.shutdown(wait=False)
+    media_executor.shutdown(wait=False)
+    download_executor.shutdown(wait=False)
