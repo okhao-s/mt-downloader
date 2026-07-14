@@ -532,8 +532,7 @@ def extract_twitter_fallback_streams(html: str) -> list[str]:
 
     variants_blocks = re.findall(patterns[4], html, re.IGNORECASE | re.DOTALL)
     for block in variants_blocks:
-        # Match both video.twimg.com and pbs.twimg.com
-        for url in re.findall(r'https?:\\/\\/(?:video|pbs)\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?', block, re.IGNORECASE):
+        for url in re.findall(r'https?:\\/\\/video\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?', block, re.IGNORECASE):
             found.append(url.replace('\\/', '/'))
 
     # 过滤有效视频域
@@ -541,7 +540,7 @@ def extract_twitter_fallback_streams(html: str) -> list[str]:
     for candidate in found:
         if not isinstance(candidate, str):
             continue
-        if 'video.twimg.com/' in candidate or 'pbs.twimg.com/' in candidate:
+        if 'video.twimg.com/' in candidate or 'pbs.twimg.com/ext_tw_video/' in candidate:
             cleaned.append(candidate)
     return dedupe_keep_order(cleaned)
 

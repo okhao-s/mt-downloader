@@ -566,6 +566,26 @@ def update_job(job_id: str, **updates):
 
 def list_recent_jobs(limit: int = 50):
     with jobs_lock:
+        # 自动清理过旧的任务记录，防止内存泄漏
+        MAX_JOBS_HISTORY = int(os.getenv("MAX_JOBS_HISTORY", "5000"))
+        if len(jobs) > MAX_JOBS_HISTORY:
+            # 保留所有活跃任务（queued, downloading）
+            active_ids = {job.get("id") for job in jobs if job.get("status") in {"queued", "downloading"}}
+            # 按创建时间排序，删除最老的 done/failed/cancelled 任务
+            sorted_jobs = sorted(jobs, key=lambda j: j.get("created_at") or "")
+            to_delete = []
+            for job in sorted_jobs:
+                if job.get("id") in active_ids:
+                    continue
+                if job.get("status") in {"done", "failed", "cancelled"}:
+                    to_delete.append(job.get("id"))
+                if len(jobs) - len(to_delete) <= MAX_JOBS_HISTORY:
+                    break
+            for jid in to_delete:
+                for idx, j in enumerate(jobs):
+                    if j.get("id") == jid:
+                        jobs.pop(idx)
+                        break
         visible_jobs = [job for job in jobs if not is_job_hidden(job)]
         return list(reversed(visible_jobs[-limit:]))
 
