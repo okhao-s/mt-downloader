@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 import os
 import re
 import subprocess
@@ -20,6 +21,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from urllib3.exceptions import InsecureRequestWarning
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+ format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("mt")
 
 from core import (
     aggressive_hls_download,
@@ -203,7 +210,7 @@ def send_wecom_text(to_user: str, content: str) -> dict:
     cfg = load_config()
     client = get_wecom_client(cfg)
     result = client.send_text(target_user, content)
-    print(f"[wecom] send_text ok: to={target_user} msgid={result.get('msgid')}")
+    logger.info(f"[wecom] send_text ok: to={target_user} msgid={result.get('msgid')}")
     return result
 
 
@@ -231,7 +238,7 @@ def send_wecom_text_async(to_user: str, content: str):
         try:
             send_wecom_text(to_user, content)
         except Exception as exc:
-            print(f"[wecom] send_text failed: to={to_user} error={exc}")
+            logger.error(f"[wecom] send_text failed: to={to_user} error={exc}")
 
     threading.Thread(target=worker, name=f"wecom-msg-{uuid4().hex[:6]}", daemon=True).start()
 
@@ -448,7 +455,7 @@ def notify_wecom_job_status(job: dict, kind: str, feedback_builder):
     try:
         send_wecom_job_notification(claimed_job.copy(), kind, to_user, feedback_builder(claimed_job.copy()))
     except Exception as exc:
-        print(f"[wecom] job_{kind} notify failed: job_id={job_id} to={to_user} error={exc}")
+        logger.error(f"[wecom] job_{kind} notify failed: job_id={job_id} to={to_user} error={exc}")
         finish_wecom_notification(job_id, kind, success=False)
         return
     finish_wecom_notification(job_id, kind, success=True)
@@ -1288,16 +1295,16 @@ def run_download_job(
     with jobs_lock:
         target_job = next((job for job in jobs if job.get("id") == job_id), None)
         if not target_job:
-            print(f"[job] skip start: job missing job_id={job_id}")
+            logger.debug(f"[job] skip start: job missing job_id={job_id}")
             return
         if is_job_hidden(target_job) or target_job.get("cancel_requested"):
-            print(f"[job] skip start: job deleted/cancelled before run job_id={job_id}")
+            logger.debug(f"[job] skip start: job deleted/cancelled before run job_id={job_id}")
             return
 
     active_slot = min(MAX_CONCURRENT_DOWNLOADS, count_active_jobs() + 1)
     updated = update_job(job_id, status="downloading", started_at=iso_now(), progress=8, status_text=f"开始下载 · 当前下载槽位 {active_slot}/{MAX_CONCURRENT_DOWNLOADS}")
     if not updated:
-        print(f"[job] skip start: update_job missed job_id={job_id}")
+        logger.warning(f"[job] skip start: update_job missed job_id={job_id}")
         return
 
     def on_progress(progress: int, status_text: str):
@@ -1902,9 +1909,9 @@ async def wecom_callback_receive(request: Request, msg_signature: str = "", time
         encrypted = crypto.encrypt(passive_plain, nonce=nonce, timestamp=timestamp)
         return Response(content=encrypted["xml"], media_type="application/xml")
     elif msg_type == "event":
-        print(f"[wecom] event received: {event}")
+        logger.info(f"[wecom] event received: {event}")
     else:
-        print(f"[wecom] unsupported msg type: {msg_type}")
+        logger.warning(f"[wecom] unsupported msg type: {msg_type}")
 
     return PlainTextResponse(content="success")
 

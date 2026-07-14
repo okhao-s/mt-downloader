@@ -1,7 +1,7 @@
 import copy
 import json
+import logging
 import os
-import uuid
 import re
 import subprocess
 import threading
@@ -13,6 +13,12 @@ from typing import Optional
 from urllib.parse import quote, urljoin, urlparse, urlsplit
 
 import requests
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("mt")
 
 
 # ── FlareSolverr Client ──────────────────────────────────────────────
@@ -79,7 +85,7 @@ class FlareSolverrClient:
             # 优先返回解析后的 HTML
             return solution.get("response") or solution.get("url")
         except Exception as exc:
-            print(f"[flaresolverr] solve failed: {exc}")
+            logger.debug(f"[flaresolverr] solve failed: {exc}")
             return None
 
     @staticmethod
@@ -477,11 +483,11 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
         if html.strip():
             # 检测到 CF 盾 → 回退 flaresolverr
             if FlareSolverrClient.is_cf_shield(html):
-                print(f"[fetch_webpage_html] CF shield detected, retrying via flaresolverr: {url}")
+                logger.debug(f"[fetch_webpage_html] CF shield detected, retrying via flaresolverr: {url}")
                 cf_html = FlareSolverrClient.solve(url, referer, user_agent, proxy)
                 if cf_html:
                     return cf_html
-                print("[fetch_webpage_html] flaresolverr fallback failed, returning original HTML")
+                logger.debug("[fetch_webpage_html] flaresolverr fallback failed, returning original HTML")
             return html
     except Exception:
         pass
@@ -502,7 +508,7 @@ def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Opti
         curl_html = proc.stdout
         # curl 也检测 CF 盾
         if FlareSolverrClient.is_cf_shield(curl_html):
-            print(f"[fetch_webpage_html] CF shield detected (curl), retrying via flaresolverr: {url}")
+            logger.debug(f"[fetch_webpage_html] CF shield detected (curl), retrying via flaresolverr: {url}")
             cf_html = FlareSolverrClient.solve(url, referer, user_agent, proxy)
             if cf_html:
                 return cf_html
@@ -898,7 +904,7 @@ def extract_info_with_ytdlp_flare(url: str, referer: Optional[str] = None, user_
             raise  # 不是 CF 问题，直接抛异常
 
         # 通过 flaresolverr 获取有效 cookies
-        print(f"[ytdlp-flare] CF detected ({error_text[:100]}), trying flaresolverr: {url}")
+        logger.debug(f"[ytdlp-flare] CF detected ({error_text[:100]}), trying flaresolverr: {url}")
         enabled, flare_url, timeout = _resolve_flare_config()
         if not enabled or not flare_url:
             raise
