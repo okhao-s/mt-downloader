@@ -1272,24 +1272,70 @@ def normalize_instagram_media_url(url: str | None) -> Optional[str]:
 
 
 def extract_instagram_images(meta: dict) -> tuple[list[str], list[dict], list[dict]]:
-    # Collect candidate image URLs with dimensions and source
+    # Support Instagram carousel: multiple entries each with thumbnails
+    entries = meta.get('entries')
+    if isinstance(entries, list) and entries:
+        all_images: list[str] = []
+        all_options: list[dict] = []
+        media_entries: list[dict] = []
+        seen_bases = set()
+        for entry_index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            # Collect candidate image URLs from entry thumbnails and global thumbnail
+            thumbnails = entry.get('thumbnails') or []
+            url_candidates = []
+            for item in thumbnails:
+                if isinstance(item, dict):
+                    url = item.get('url')
+                    if url:
+                        width = item.get('width')
+                        height = item.get('height')
+                        url_candidates.append((url, width, height, 'yt-dlp-instagram-entry'))
+            # Entry-level thumbnail fallback
+            if entry.get('thumbnail'):
+                url_candidates.append((entry.get('thumbnail'), None, None, 'yt-dlp-instagram-entry'))
+            # Deduplicate and normalize per entry, add to global lists
+            for url, width, height, source in url_candidates:
+                normalized = normalize_instagram_media_url(url)
+                if not is_instagram_image_candidate(normalized):
+                    continue
+                parsed = urlsplit(normalized)
+                base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if base in seen_bases:
+                    continue
+                seen_bases.add(base)
+                option = build_stream_option(normalized, {'width': width, 'height': height}, source=source)
+                all_images.append(normalized)
+                all_options.append(option)
+                media_entries.append({
+                    'media_index': len(media_entries),
+                    'entry_index': entry_index,
+                    'media_key': entry.get('id') or entry.get('display_id') or entry.get('webpage_url'),
+                    'thumbnail': normalized,
+                    'media_type': 'image',
+                    'streams': [],
+                    'stream_options': [],
+                    'best_stream_url': None,
+                    'best_stream_option': None,
+                    'images': [normalized],
+                    'image_options': [option],
+                })
+        if all_images:
+            return all_images, all_options, media_entries
+
+    # Fallback: single best image from top-level metadata
     candidates = []
-    # Top-level thumbnails
     thumbnails = meta.get('thumbnails') or []
-    if isinstance(thumbnails, list):
-        for item in thumbnails:
-            if isinstance(item, dict):
-                url = item.get('url')
-                if url:
-                    candidates.append((url, item.get('width'), item.get('height'), 'yt-dlp-instagram-thumbnail'))
-    # Global thumbnail (may be same as one in the list, but will be deduped)
+    for item in thumbnails:
+        if isinstance(item, dict):
+            url = item.get('url')
+            if url:
+                candidates.append((url, item.get('width'), item.get('height'), 'yt-dlp-instagram-thumbnail'))
     if meta.get('thumbnail'):
         candidates.append((meta.get('thumbnail'), None, None, 'yt-dlp-instagram-thumbnail'))
-
     if not candidates:
         return [], [], []
-
-    # Normalize URLs and select the best by resolution area
     best_url = None
     best_option = None
     best_area = -1
@@ -1302,10 +1348,8 @@ def extract_instagram_images(meta: dict) -> tuple[list[str], list[dict], list[di
             best_area = area
             best_url = normalized
             best_option = build_stream_option(normalized, {'width': width, 'height': height}, source=source)
-
     if not best_url:
         return [], [], []
-
     media_entry = {
         'media_index': 0,
         'entry_index': 0,
