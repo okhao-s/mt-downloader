@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--proxy", default=None, help="Optional HTTP/HTTPS proxy URL")
     args = parser.parse_args()
 
-    info = discover_stream(args.url, args.referer, args.user_agent, args.cookies, args.proxy)
+    info = discover_stream(args.url, args.referer, args.user_agent, args.proxy, None, None, args.cookies)
     stream_url = info.get("resolved_url")
     if not stream_url:
         print("[x] no m3u8 stream found. Try passing the direct .m3u8 URL.", flush=True)

@@ -1901,8 +1901,11 @@ def discover_stream(
         selected_index,
         cookies_path,
     )
-    with _DISCOVER_STREAM_CACHE_LOCK:
-        _DISCOVER_STREAM_CACHE[cache_key] = (now + DISCOVER_STREAM_CACHE_TTL, copy.deepcopy(info))
+    # 仅缓存成功的解析结果（有 streams 或有 images），失败不缓存以免阻塞重试
+    has_result = bool(info.get("streams") or info.get("images"))
+    if has_result:
+        with _DISCOVER_STREAM_CACHE_LOCK:
+            _DISCOVER_STREAM_CACHE[cache_key] = (now + DISCOVER_STREAM_CACHE_TTL, copy.deepcopy(info))
     return info
 
 
@@ -1965,13 +1968,12 @@ def ffmpeg_download(
     def emit_progress():
         if not progress_callback:
             return
-        out_time_ms = int(stats.get("out_time_ms") or 0)
+        out_time_ms = int(stats.get("out_time_ms") or 0)  # 微秒
         total_size = int(stats.get("total_size") or 0)
         elapsed_s = max(0.1, time.time() - start_time)
-        # Progress based on video time: every 30s of video = 1% progress
-        # This ensures the bar moves visibly even for long videos
-        pseudo_progress = max(8, min(95, 8 + out_time_ms // 30_000_000))
-        parts = [f"视频进度 {out_time_ms / 1000000:.1f}s"]
+        # out_time_ms 是微秒；按每 2s 视频 ≈ 1% 步进（8%-95%），短/长视频都可见
+        pseudo_progress = max(8, min(95, 8 + out_time_ms // 2_000_000))
+        parts = [f"视频进度 {out_time_ms / 1_000_000:.1f}s"]
         if total_size > 0:
             parts.append(f"已下载 {total_size / 1024 / 1024:.1f}MB")
         if total_size > 0 and elapsed_s > 0:

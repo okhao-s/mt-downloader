@@ -578,21 +578,23 @@ def list_recent_jobs(limit: int = 50):
         if len(jobs) > MAX_JOBS_HISTORY:
             # 保留所有活跃任务（queued, downloading）
             active_ids = {job.get("id") for job in jobs if job.get("status") in {"queued", "downloading"}}
-            # 按创建时间排序，删除最老的 done/failed/cancelled 任务
-            sorted_jobs = sorted(jobs, key=lambda j: j.get("created_at") or "")
-            to_delete = []
-            for job in sorted_jobs:
-                if job.get("id") in active_ids:
-                    continue
-                if job.get("status") in {"done", "failed", "cancelled"}:
-                    to_delete.append(job.get("id"))
-                if len(jobs) - len(to_delete) <= MAX_JOBS_HISTORY:
-                    break
-            for jid in to_delete:
-                for idx, j in enumerate(jobs):
-                    if j.get("id") == jid:
-                        jobs.pop(idx)
+            # 如果全是活跃任务，跳过清理（避免死循环排序）
+            if len(active_ids) < len(jobs):
+                # 按创建时间排序，删除最老的 done/failed/cancelled 任务
+                sorted_jobs = sorted(jobs, key=lambda j: j.get("created_at") or "")
+                to_delete = []
+                for job in sorted_jobs:
+                    if job.get("id") in active_ids:
+                        continue
+                    if job.get("status") in {"done", "failed", "cancelled"}:
+                        to_delete.append(job.get("id"))
+                    if len(jobs) - len(to_delete) <= MAX_JOBS_HISTORY:
                         break
+                for jid in to_delete:
+                    for idx, j in enumerate(jobs):
+                        if j.get("id") == jid:
+                            jobs.pop(idx)
+                            break
         visible_jobs = [job for job in jobs if not is_job_hidden(job)]
         return list(reversed(visible_jobs[-limit:]))
 
@@ -717,26 +719,24 @@ def allocate_output_name(suggested_name: str, download_dir: Path | None = None, 
             and Path(str(job.get("download_dir") or target_dir)).resolve() == target_dir.resolve()
         }
 
-    taken_names = {path.name for path in target_dir.iterdir() if path.is_file()}
-    taken_names.update(reserved_names)
+        taken_names = {path.name for path in target_dir.iterdir() if path.is_file()}
+        taken_names.update(reserved_names)
 
-    final_name = f"{stem}{suffix}"
-    index = 1
-    while final_name in taken_names:
-        # 计算添加 (index) 后的字节长度
-        test_name = f"{stem} ({index}){suffix}"
-        if len(test_name.encode("utf-8")) > max_bytes:
-            # 超出限制，缩短 stem 再试
-            reserved = 5 + len(f" ({index})")
-            max_stem = max(1, max_bytes - len(suffix.encode("utf-8")) - reserved)
-            short_stem = stem
-            while short_stem and len(short_stem.encode("utf-8")) > max_stem:
-                short_stem = short_stem[:-1].rstrip(" ._")
-            if not short_stem:
-                short_stem = "out"
-            test_name = f"{short_stem} ({index}){suffix}"
-        final_name = test_name
-        index += 1
+        final_name = f"{stem}{suffix}"
+        index = 1
+        while final_name in taken_names:
+            test_name = f"{stem} ({index}){suffix}"
+            if len(test_name.encode("utf-8")) > max_bytes:
+                reserved = 5 + len(f" ({index})")
+                max_stem = max(1, max_bytes - len(suffix.encode("utf-8")) - reserved)
+                short_stem = stem
+                while short_stem and len(short_stem.encode("utf-8")) > max_stem:
+                    short_stem = short_stem[:-1].rstrip(" ._")
+                if not short_stem:
+                    short_stem = "out"
+                test_name = f"{short_stem} ({index}){suffix}"
+            final_name = test_name
+            index += 1
     return final_name
 
 
@@ -1361,8 +1361,12 @@ def run_download_job(
         update_job(job_id, status="done", progress=100, status_text="下载完成", finished_at=iso_now(), retry_scheduled=False)
     except Exception as exc:
         cancelled = "取消" in str(exc)
-        if cancelled and output_path.exists() and output_path.is_file():
-            output_path.unlink(missing_ok=True)
+        # 清理不完整文件：取消或失败都删除输出文件
+        if output_path.exists() and output_path.is_file():
+            try:
+                output_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         updated = update_job(
             job_id,
             status="failed" if not cancelled else "cancelled",

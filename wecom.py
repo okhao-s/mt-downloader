@@ -204,32 +204,44 @@ class WeComClient:
 
     def _fetch_access_token(self) -> str:
         masked_corp = _mask_wecom_value(self.corp_id)
-        try:
-            resp = requests.get(
-                self.token_url,
-                params={"corpid": self.corp_id, "corpsecret": self.secret},
-                timeout=self.request_timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.RequestException as exc:
-            raise RuntimeError(f"企业微信获取 access_token 请求失败: corp_id={masked_corp} error={exc}") from exc
-        except ValueError as exc:
-            body = (getattr(resp, "text", "") or "")[:300]
-            raise RuntimeError(f"企业微信获取 access_token 响应非 JSON: corp_id={masked_corp} body={body}") from exc
+        last_error = None
+        for attempt in range(1, 4):
+            if attempt > 1:
+                time.sleep(min(1.0 * attempt, 3))
+            try:
+                resp = requests.get(
+                    self.token_url,
+                    params={"corpid": self.corp_id, "corpsecret": self.secret},
+                    timeout=self.request_timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as exc:
+                last_error = f"请求失败 corp_id={masked_corp} error={exc}"
+                continue
+            except ValueError as exc:
+                body = (getattr(resp, "text", "") or "")[:300]
+                last_error = f"响应非 JSON corp_id={masked_corp} body={body}"
+                continue
 
-        if data.get("errcode") != 0:
-            errcode = data.get("errcode")
-            errmsg = data.get("errmsg") or data
-            raise RuntimeError(f"企业微信获取 access_token 失败: corp_id={masked_corp} errcode={errcode} errmsg={errmsg}")
+            if data.get("errcode") != 0:
+                errcode = data.get("errcode")
+                errmsg = data.get("errmsg") or data
+                # 系统繁忙类错误重试，参数类错误直接抛
+                if errcode in {-1, 45009, 45033}:
+                    last_error = f"errcode={errcode} errmsg={errmsg}"
+                    continue
+                raise RuntimeError(f"企业微信获取 access_token 失败: corp_id={masked_corp} errcode={errcode} errmsg={errmsg}")
 
-        token = str(data.get("access_token") or "")
-        expires_in = int(data.get("expires_in") or 7200)
-        if not token:
-            raise RuntimeError(f"企业微信 access_token 为空: corp_id={masked_corp}")
-        self._token = token
-        self._token_expire_at = time.time() + max(60, expires_in - 120)
-        return token
+            token = str(data.get("access_token") or "")
+            expires_in = int(data.get("expires_in") or 7200)
+            if not token:
+                raise RuntimeError(f"企业微信 access_token 为空: corp_id={masked_corp}")
+            self._token = token
+            self._token_expire_at = time.time() + max(60, expires_in - 120)
+            return token
+
+        raise RuntimeError(f"企业微信获取 access_token 重试 3 次仍失败: {last_error}")
 
     def get_access_token(self, force_refresh: bool = False) -> str:
         with self._lock:
