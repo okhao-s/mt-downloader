@@ -1,7 +1,7 @@
 fastapi==0.138.0
 uvicorn==0.49.0
 requests==2.34.2
-yt-dlp==2026.6.9
+yt-dlp==2026.8.19
 curl-cffi==0.15.0
 brotli==1.2.0
 certifi==2026.6.17
