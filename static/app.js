@@ -598,7 +598,7 @@ async function parseUrl() {
     }
 
     setStatus('解析中…', 'loading');
-    const data = await api('/api/parse', payload);
+    const data = await api('/api/parse', payload, 180000); // 解析可能走 flaresolverr/yt-dlp 多轮探测,后端最坏 2-3 分钟,默认 45s 会误报失败
     applyParseData(data);
     const shownCount = state.latestParseData?.stream_count ?? data.stream_count;
     const shownMediaCount = Number(state.latestParseData?.media_entries?.length || 0);

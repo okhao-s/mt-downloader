@@ -116,7 +116,8 @@ YTDLP_INFO_TIMEOUT = int(os.getenv("YTDLP_INFO_TIMEOUT", "45"))
 YTDLP_SOCKET_TIMEOUT = int(os.getenv("YTDLP_SOCKET_TIMEOUT", "30"))
 YTDLP_DOWNLOAD_TIMEOUT = int(os.getenv("YTDLP_DOWNLOAD_TIMEOUT", "1800"))
 AGGRESSIVE_HLS_TIMEOUT = int(os.getenv("AGGRESSIVE_HLS_TIMEOUT", "1800"))
-DISCOVER_STREAM_CACHE_TTL = max(1, int(os.getenv("DISCOVER_STREAM_CACHE_TTL", "15")))
+# 解析成功缓存 TTL:15s 太短,前端超时后重试会重新付整条探测链的代价;120s 内重试直接命中
+DISCOVER_STREAM_CACHE_TTL = max(1, int(os.getenv("DISCOVER_STREAM_CACHE_TTL", "120")))
 _DISCOVER_STREAM_CACHE: dict[tuple, tuple[float, dict]] = {}
 _DISCOVER_STREAM_CACHE_LOCK = threading.Lock()
 
@@ -146,13 +147,15 @@ def normalize_cookie_config(cfg: dict | None) -> dict:
     cfg["wecom_enabled"] = bool(cfg.get("wecom_enabled", False))
     cfg["wecom_corp_id"] = str(cfg.get("wecom_corp_id") or "")
     cfg["wecom_agent_id"] = str(cfg.get("wecom_agent_id") or "")
-    # Preserve __KEEP__ sentinel — don't overwrite real secrets with empty string
-    secret = str(cfg.get("wecom_secret") or "")
-    cfg["wecom_secret"] = secret if not _keep_sentinel(secret) else cfg.get("wecom_secret", "")
-    token = str(cfg.get("wecom_token") or "")
-    cfg["wecom_token"] = token if not _keep_sentinel(token) else cfg.get("wecom_token", "")
-    aes_key = str(cfg.get("wecom_encoding_aes_key") or "")
-    cfg["wecom_encoding_aes_key"] = aes_key if not _keep_sentinel(aes_key) else cfg.get("wecom_encoding_aes_key", "")
+    # 历史版本可能把 __KEEP__ 哨兵写进文件;哨兵不是真实凭据,清空并提示重新保存。
+    # "留空保留"的语义由 set_config 的 guard 负责;原 else 分支回读同一个 key,等于原样保留哨兵,属无效代码。
+    for secret_key in ("wecom_secret", "wecom_token", "wecom_encoding_aes_key"):
+        value = str(cfg.get(secret_key) or "")
+        if _keep_sentinel(value):
+            logger.warning(f"[config] {secret_key} 存在 __KEEP__ 哨兵残留,已清空;请在设置页重新填写并保存")
+            cfg[secret_key] = ""
+        else:
+            cfg[secret_key] = value
     cfg["wecom_callback_url"] = str(cfg.get("wecom_callback_url") or "")
     # Remove deprecated config keys (if any)
     if "wecom_forward_token" in cfg:
@@ -165,8 +168,12 @@ def load_config() -> dict:
     if CONFIG_PATH.exists():
         try:
             return normalize_cookie_config(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(f"[config] config.json 解析失败({exc});已备份为 config.json.bad 并回退默认配置")
+            try:
+                CONFIG_PATH.rename(CONFIG_PATH.with_name(CONFIG_PATH.name + ".bad"))
+            except Exception:
+                logger.error("[config] config.json.bad 备份失败,原损坏文件保留")
     return normalize_cookie_config({
         "default_proxy": "",
         "auto_retry_enabled": False,
@@ -189,7 +196,10 @@ def load_config() -> dict:
 def save_config(cfg: dict):
     ensure_parent(CONFIG_PATH)
     normalized = normalize_cookie_config(cfg)
-    CONFIG_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 原子写:先写临时文件再 rename,避免磁盘满/进程中途被杀留下半截 JSON
+    tmp_path = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    tmp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, CONFIG_PATH)
 
 
 def build_headers(referer: Optional[str] = None, user_agent: Optional[str] = None) -> dict:
@@ -223,7 +233,9 @@ def route_proxy_for_url(url: Optional[str], proxy: Optional[str]) -> Optional[st
 def is_m3u8_url(url: str) -> bool:
     parsed = urlparse(url)
     path = (parsed.path or "").lower()
-    return path.endswith(".m3u8") or ".m3u8?" in url.lower() or "m3u8" in path
+    # 收紧:路径必须含 .m3u8(带扩展名);旧逻辑 "m3u8" in path 会把 /m3u8-guide.html 这类普通网页误判为直链,
+    # 导致跳过真实探测、下载报错。query 形如 a.m3u8?token=x 时 path 仍为 a.m3u8,不受影响。
+    return ".m3u8" in path
 
 
 def is_direct_media_url(url: str) -> bool:
@@ -540,7 +552,13 @@ def extract_twitter_fallback_streams(html: str) -> list[str]:
             candidate = candidate.replace('\\/', '/')
             found.append(candidate)
 
-    variants_blocks = re.findall(patterns[4], html, re.IGNORECASE | re.DOTALL)
+    # playbackUrl:patterns[4] 自带捕获组,直接提取(此前被误用在下面的 variants 循环里)
+    for match in re.findall(patterns[4], html, re.IGNORECASE):
+        candidate = match if isinstance(match, str) else match[0]
+        found.append(candidate.replace('\\/', '/'))
+
+    # video_info / variants 块:真正的 variants 正则是 patterns[5];旧代码误用 patterns[4],导致 [5] 成为死代码
+    variants_blocks = re.findall(patterns[5], html, re.IGNORECASE | re.DOTALL)
     for block in variants_blocks:
         # Match both video.twimg.com and pbs.twimg.com
         for url in re.findall(r'https?:\\/\\/(?:video|pbs)\.twimg\.com\\/.*?(?:m3u8|mp4)(?:[^"\\]*)?', block, re.IGNORECASE):

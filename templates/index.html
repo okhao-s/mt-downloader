@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="/static/hls.min.js?v={{ asset_version }}"></script>
 </head>
 <body>
   <div class="bg-orb orb-a"></div>
@@ -192,7 +192,7 @@
 
           <label class="field field-wide">
             <span>启用企业微信</span>
-            <input id="cfg_wecom_enabled" type="checkbox">
+            <input id="cfg_wecom_enabled" type="checkbox" {% if config.wecom_enabled %}checked{% endif %}>
             <small id="wecom-status-hint" class="field-hint">企业微信配置未完成。把参数填完整后再保存。</small>
           </label>
 

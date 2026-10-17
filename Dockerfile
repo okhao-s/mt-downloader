@@ -15,18 +15,8 @@ RUN apk add --no-cache \
         ca-certificates \
     && update-ca-certificates
 
-RUN pip install --no-cache-dir \
-        fastapi \
-        uvicorn \
-        requests \
-        yt-dlp \
-        curl-cffi \
-        brotli \
-        certifi \
-        websockets \
-        jinja2 \
-        python-multipart \
-        pycryptodome
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 WORKDIR /app
 COPY app.py core.py wecom.py download.py entrypoint.sh /app/

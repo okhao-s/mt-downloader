@@ -58,7 +58,20 @@ if not APP_COMMIT:
         APP_COMMIT = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=str(BASE_DIR), text=True, stderr=subprocess.DEVNULL).strip()
     except Exception:
         APP_COMMIT = "unknown"
-STATIC_ASSET_VERSION = f"{APP_VERSION}-{APP_COMMIT}".replace(" ", "-")
+def _compute_static_asset_version() -> str:
+    # 静态资源版本 = commit + 关键文件内容哈希:本地构建不传 --build-arg 时,旧的恒定值
+    # 会让 ?v= 永不变化,反代/浏览器缓存可能一直服务旧 JS(旧版 saveConfig 正好有点保存无反应的 bug)
+    import hashlib
+    digest = hashlib.sha256()
+    for rel in ("static/app.js", "static/style.css", "static/hls.min.js", "templates/index.html"):
+        try:
+            digest.update((BASE_DIR / rel).read_bytes())
+        except Exception:
+            pass
+    return f"{APP_COMMIT[:8] or 'dev'}-{digest.hexdigest()[:10]}"
+
+
+STATIC_ASSET_VERSION = _compute_static_asset_version()
 DOWNLOAD_DIR = Path("/downloads")
 DATA_DIR = Path("/app/data")
 COOKIES_DIR = DATA_DIR / "cookies"
@@ -1051,7 +1064,7 @@ class ConfigPayload(BaseModel):
     xck: str | None = str(TWITTER_COOKIES_PATH)
     youtubeck: str | None = str(YOUTUBE_COOKIES_PATH)
     bilibilick: str | None = str(BILIBILI_COOKIES_PATH)
-    douyinck: str | None = str(DOUYIN_COOKIES_PATH)
+    douyinck: str | None = None  # 前端不发送该字段;None 时回退到已保存值,避免每次保存被重置为默认路径
     twitter_cookies_path: str | None = None
     youtube_cookies_path: str | None = None
     bilibili_cookies_path: str | None = None
