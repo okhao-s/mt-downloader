@@ -914,10 +914,12 @@ async def run_in_executor(executor: ThreadPoolExecutor, func, *args, **kwargs):
     return await loop.run_in_executor(executor, func, *args)
 
 
-def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int | None = None, stream: bool = False):
+def safe_requests_get(target: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None, timeout: int | None = None, stream: bool = False, extra_headers: dict | None = None):
     if timeout is None:
         timeout = int(os.getenv("SAFE_REQUESTS_TIMEOUT", "60"))
     headers = build_headers(referer, user_agent)
+    if extra_headers:
+        headers.update(extra_headers)
     proxies = build_proxies(proxy)
     try:
         return requests.get(target, headers=headers, proxies=proxies, timeout=timeout, stream=stream)
@@ -1794,10 +1796,11 @@ async def preview_m3u8(
 
 @app.get("/api/media")
 @app.get("/api/media/{name:path}")
-async def media_proxy(name: str = "", target: str = "", referer: str | None = None, user_agent: str | None = None, proxy: str | None = None):
+async def media_proxy(request: Request, name: str = "", target: str = "", referer: str | None = None, user_agent: str | None = None, proxy: str | None = None):
     cfg = load_config()
     actual_proxy = resolve_request_proxy(target, proxy, cfg)
     response = None
+    range_header = request.headers.get("range")
     try:
         response = await run_in_executor(
             media_executor,
@@ -1808,6 +1811,7 @@ async def media_proxy(name: str = "", target: str = "", referer: str | None = No
             actual_proxy,
             60,
             True,
+            {"Range": range_header} if range_header else None,
         )
         response.raise_for_status()
     except Exception as exc:
@@ -1817,6 +1821,26 @@ async def media_proxy(name: str = "", target: str = "", referer: str | None = No
             except Exception:
                 pass
         raise HTTPException(status_code=502, detail=f"媒体分片拉取失败：{exc}")
+
+    # 子播放列表(master → variant)同样经过本代理,必须在这里再重写一次:
+    # 否则 variant 里的相对分片路径会被解析成 /api/media/<seg> 而丢失 target,
+    # 播放器表现为"m3u8 解析失败"。
+    content_type = (response.headers.get("content-type") or "").lower()
+    target_path = (target or "").split("?")[0].lower()
+    if "mpegurl" in content_type or target_path.endswith(".m3u8") or name.lower().endswith(".m3u8"):
+        try:
+            text = response.text
+        finally:
+            response.close()
+        if "#EXTM3U" in text[:256]:
+            proxy_prefix = f"{str(request.base_url)}api/media/"
+            rewritten = rewrite_m3u8_manifest(text, target, proxy_prefix, referer, user_agent, actual_proxy)
+            return Response(
+                content=rewritten,
+                media_type="application/vnd.apple.mpegurl",
+                headers={"Cache-Control": "no-cache"},
+            )
+        return Response(content=text, media_type="application/vnd.apple.mpegurl")
 
     headers = {}
     for key in ("content-length", "content-range", "accept-ranges", "cache-control", "etag", "last-modified"):

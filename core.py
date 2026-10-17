@@ -63,10 +63,14 @@ class FlareSolverrClient:
             "url": url,
             "maxTimeout": 60000,
         }
+        headers = {}
         if referer:
-            payload["referrer"] = referer
-        if user_agent:
-            payload["userAgent"] = user_agent
+            headers["Referer"] = referer
+        if headers:
+            # FlareSolverr v3 没有顶层 referrer 字段,自定义 header 必须走 headers;
+            # 旧代码把 referer 塞进 "referrer",服务端直接忽略,防盗链站点因此拿不到页面。
+            # 不传 User-Agent:必须让 flaresolverr 用自己浏览器版本对应的 UA,否则盾认不一致更难解。
+            payload["headers"] = headers
         if proxy:
             payload["proxy"] = {"url": proxy}
 
@@ -74,18 +78,21 @@ class FlareSolverrClient:
             resp = requests.post(
                 f"{flare_url}/v1",
                 json=payload,
-                timeout=timeout,
+                # maxTimeout 是 flaresolverr 解盾的上限,requests 的超时必须比它长,
+                # 否则解盾还没返回就先超时(旧代码 timeout == maxTimeout,难盾必超时)。
+                timeout=(10, max(timeout, 60) + 20),
             )
             resp.raise_for_status()
             data = resp.json()
             status = data.get("status")
             if status != "ok":
+                logger.warning(f"[flaresolverr] solve failed for {url}: {status} {data.get('message', '')}")
                 return None
             solution = data.get("solution") or {}
             # 优先返回解析后的 HTML
             return solution.get("response") or solution.get("url")
         except Exception as exc:
-            logger.debug(f"[flaresolverr] solve failed: {exc}")
+            logger.warning(f"[flaresolverr] 请求失败({flare_url}): {type(exc).__name__}: {exc}")
             return None
 
     @staticmethod
@@ -98,10 +105,11 @@ class FlareSolverrClient:
             return False
         lower = html.lower()
         indicators = [
-            "cloudflare", "cf-challenge", "__cfduid", "cf-ray",
-            "sorry, you have been blocked", "see cloudflare performance & security solutions",
-            "checking your browser before accessing", "ddos protection by cloudflare",
-            "ray ID:", "cloudflare rings",
+            "cf-challenge", "__cfduid", "cf-ray", "cf_chl_opt",
+            "just a moment...", "checking your browser before accessing",
+            "attention required! | cloudflare", "enable javascript and cookies to continue",
+            "sorry, you have been blocked", "ddos protection by cloudflare",
+            "cdn-cgi/challenge-platform",
         ]
         return any(ind in lower for ind in indicators)
 
@@ -935,7 +943,7 @@ def extract_info_with_ytdlp_flare(url: str, referer: Optional[str] = None, user_
             resp = requests.post(
                 f"{flare_url}/v1",
                 json={"cmd": "request.get", "url": url, "maxTimeout": 60000},
-                timeout=timeout,
+                timeout=(10, max(timeout, 60) + 20),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -2257,16 +2265,22 @@ def build_media_proxy_url(proxy_prefix: str, target_url: str, referer: str | Non
 
 
 def rewrite_m3u8_manifest(manifest_text: str, manifest_url: str, proxy_prefix: str, referer: str | None = None, user_agent: str | None = None, proxy: str | None = None) -> str:
+    def _rewrite_uri(match):
+        uri = match.group(1)
+        if not uri or uri.startswith(("data:", "skd:")):
+            return match.group(0)
+        proxied = build_media_proxy_url(proxy_prefix, urljoin(manifest_url, uri), referer, user_agent, proxy)
+        return f'URI="{proxied}"'
+
     lines = []
     for line in manifest_text.splitlines():
         raw = line.strip()
         if not raw or raw.startswith("#"):
-            if raw.startswith("#EXT-X-KEY") and 'URI="' in raw:
-                line = re.sub(
-                    r'URI="([^"]+)"',
-                    lambda m: f'URI="{build_media_proxy_url(proxy_prefix, urljoin(manifest_url, m.group(1)), referer, user_agent, proxy)}"',
-                    line,
-                )
+            # 所有带 URI="..." 的标签都要改写:EXT-X-KEY / EXT-X-SESSION-KEY /
+            # EXT-X-MAP(fMP4 初始化段) / EXT-X-MEDIA(音轨、字幕) / EXT-X-PART / EXT-X-PRELOAD-HINT。
+            # 只处理 EXT-X-KEY 时,fMP4 流会去请求相对路径 main.mp4,播放器拿不到目标地址直接失败。
+            if 'URI="' in raw:
+                line = re.sub(r'URI="([^"]*)"', _rewrite_uri, line)
             lines.append(line)
             continue
         abs_url = urljoin(manifest_url, raw)
