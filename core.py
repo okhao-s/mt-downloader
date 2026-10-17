@@ -49,6 +49,19 @@ class FlareSolverrClient:
     """轻量级 FlareSolverr API 客户端。"""
 
     @staticmethod
+    def default_proxy() -> Optional[str]:
+        """请求级没有代理时，沿用本容器自己的出网代理。
+
+        flaresolverr 是独立容器，读不到 MT 容器的 HTTP_PROXY；机房直连 IP 解 xchina
+        这类 Cloudflare 盾会一直卡在挑战页直到超时（500），经代理 13s 就能拿到正文。
+        """
+        for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+            value = (os.getenv(key) or "").strip()
+            if value:
+                return value
+        return None
+
+    @staticmethod
     def solve(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> Optional[str]:
         """
         通过 flaresolverr 解析受 Cloudflare 保护的页面，返回 HTML 正文。
@@ -73,6 +86,10 @@ class FlareSolverrClient:
             payload["headers"] = headers
         if proxy:
             payload["proxy"] = {"url": proxy}
+        else:
+            fallback_proxy = FlareSolverrClient.default_proxy()
+            if fallback_proxy:
+                payload["proxy"] = {"url": fallback_proxy}
 
         try:
             resp = requests.post(
@@ -467,21 +484,30 @@ def extract_xchina_author(html: str) -> Optional[str]:
     return None
 
 
-def extract_m3u8_from_html(html: str):
+def extract_m3u8_from_html(html: str, base_url: Optional[str] = None):
     patterns = [
-        r'https?://[^"\'\s>]+\.m3u8(?:\?[^"\'\s>]*)?',
-        r'"(//[^"\']+\.m3u8(?:\?[^"\']*)?)"',
-        r"'(//[^'\"]+\.m3u8(?:\?[^'\"]*)?)'",
-        r'https?:\\/\\/.*?\.m3u8(?:[^"\'\s>]*)?',
-        r'"url"\s*:\s*"(https?:\\/\\/.*?\.m3u8(?:[^"\\]*)?)"',
+        r'''https?://[^"'\s>]+\.m3u8(?:\?[^"'\s>]*)?''',
+        r'''"(//[^"']+\.m3u8(?:\?[^"']*)?)"''',
+        r"""'(//[^'"]+\.m3u8(?:\?[^'"]*)?)'""",
+        r'''https?:\\/\\/.*?\.m3u8(?:[^"'\s>]*)?''',
+        r'''"url"\s*:\s*"(https?:\\/\\/.*?\.m3u8(?:[^"\\]*)?)"''',
+        # 播放器常见的相对/根路径写法，例如
+        # <div id="video-player" data-src="/hls/<id>/master.m3u8">（xchina 就是这种）
+        r'''(?:data-src|data-url|data-playlist|data-video|data-source|src|href)\s*=\s*["']([^"']*\.m3u8[^"']*)["']''',
+        r'''["']((?:\.{0,2}/|/)[^"'\s>]*\.m3u8(?:[^"'\s>]*)?)["']''',
     ]
     found = []
     for pat in patterns:
         for match in re.findall(pat, html, re.IGNORECASE):
             candidate = match if isinstance(match, str) else match[0]
-            candidate = candidate.replace("\\/", "/")
+            candidate = candidate.replace("\\/", "/").strip()
             if candidate.startswith("//"):
                 candidate = "https:" + candidate
+            elif not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", candidate):
+                # 相对路径必须基于页面地址补全，否则下游会把它当成本地路径
+                if not base_url:
+                    continue
+                candidate = urljoin(base_url, candidate)
             found.append(candidate)
 
     for raw_cfg in re.findall(r"data-config='([^']+)'", html, re.IGNORECASE):
@@ -641,7 +667,7 @@ def probe_webpage(url: str, referer: Optional[str] = None, user_agent: Optional[
         if not effective_ua:
             effective_ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
     html = fetch_webpage_html(effective_url, referer, effective_ua, proxy)
-    streams = extract_m3u8_from_html(html)
+    streams = extract_m3u8_from_html(html, effective_url)
     stream_options = [{"url": s, "source": "html"} for s in streams]
     title = extract_title_from_html(html)
     author = None
@@ -940,9 +966,13 @@ def extract_info_with_ytdlp_flare(url: str, referer: Optional[str] = None, user_
             raise
 
         try:
+            flare_payload = {"cmd": "request.get", "url": url, "maxTimeout": 60000}
+            flare_proxy = proxy or FlareSolverrClient.default_proxy()
+            if flare_proxy:
+                flare_payload["proxy"] = {"url": flare_proxy}
             resp = requests.post(
                 f"{flare_url}/v1",
-                json={"cmd": "request.get", "url": url, "maxTimeout": 60000},
+                json=flare_payload,
                 timeout=(10, max(timeout, 60) + 20),
             )
             resp.raise_for_status()
@@ -2253,13 +2283,13 @@ def build_media_proxy_url(proxy_prefix: str, target_url: str, referer: str | Non
         pass
     filename = Path(parsed_target.path).name or "segment.bin"
     safe_name = quote(filename, safe='._-')
-    params = [f"target={quote(target_url, safe=':/?&=%._-')}"]
+    params = [f"target={quote(target_url, safe='')}"]
     if referer:
-        params.append(f"referer={quote(referer, safe=':/?&=%._-')}")
+        params.append(f"referer={quote(referer, safe='')}")
     if user_agent:
-        params.append(f"user_agent={quote(user_agent, safe=':/?&=%._-')}")
+        params.append(f"user_agent={quote(user_agent, safe='')}")
     if proxy:
-        params.append(f"proxy={quote(proxy, safe=':/?&=%._-')}")
+        params.append(f"proxy={quote(proxy, safe='')}")
     separator = '&' if '?' in proxy_prefix else '?'
     return f"{proxy_prefix}{safe_name}{separator}{'&'.join(params)}"
 
