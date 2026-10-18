@@ -1404,6 +1404,9 @@ def run_download_job(
 
 def build_video_output_name(base_name: str, media_index: int | None = None, total: int | None = None, ext: str = ".mp4", max_bytes: int = 150) -> str:
     suffix = f' - {media_index + 1}' if media_index is not None and (total or 0) > 1 else ''
+    # 用户自己写了扩展名时不要再补一个，否则会出现 xxx.mp4.mp4
+    if re.search(r"\.(mp4|mkv|ts|flv|mov|avi|webm)$", str(base_name or ""), re.IGNORECASE):
+        ext = ""
     candidate = f"{base_name}{suffix}{ext}"
     result = normalize_filename(candidate, max_bytes=max_bytes)
     # 如果 normalize 后比原候选短很多，说明被截断了，需要确保最终不超过 max_bytes
