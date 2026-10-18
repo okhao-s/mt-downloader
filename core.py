@@ -484,23 +484,45 @@ def extract_xchina_author(html: str) -> Optional[str]:
     return None
 
 
+_STREAM_BAD_CHARS = re.compile(r"""[\s"'\\<>{},]""")
+
+
+def _is_clean_stream_url(url: str) -> bool:
+    """播放地址必须是干净 URL：不含引号/反斜杠/逗号/空白，长度合理。"""
+    if not url or len(url) > 2048:
+        return False
+    if not re.match(r"^https?://", url, re.I):
+        return False
+    if _STREAM_BAD_CHARS.search(url):
+        return False
+    return ".m3u8" in url.lower()
+
+
 def extract_m3u8_from_html(html: str, base_url: Optional[str] = None):
+    r"""从页面提取 m3u8 地址。
+
+    JSON 内嵌地址常写成 https:\/\/...，且同一段 JSON 里可能先出现图片地址。
+    旧实现用 https?:\\/\\/.*?\.m3u8 跨字段匹配，会把“图片地址 + 整段 JSON”
+    一起当成播放地址（ffmpeg 报 Invalid data found when processing input）。
+    现在先归一化转义斜杠，只匹配不跨引号/空白的 URL，并把干净短地址排前面。
+    """
+    if not html:
+        return []
+    text = html.replace("\\/", "/").replace("\\u002F", "/").replace("\\u002f", "/")
+
     patterns = [
         r'''https?://[^"'\s>]+\.m3u8(?:\?[^"'\s>]*)?''',
         r'''"(//[^"']+\.m3u8(?:\?[^"']*)?)"''',
-        r"""'(//[^'"]+\.m3u8(?:\?[^'"]*)?)'""",
-        r'''https?:\\/\\/.*?\.m3u8(?:[^"'\s>]*)?''',
-        r'''"url"\s*:\s*"(https?:\\/\\/.*?\.m3u8(?:[^"\\]*)?)"''',
-        # 播放器常见的相对/根路径写法，例如
-        # <div id="video-player" data-src="/hls/<id>/master.m3u8">（xchina 就是这种）
+        r"""'(//[^']+\.m3u8(?:\?[^']*)?)'""",
+        # 播放器常见的相对/根路径写法，例如 data-src="/hls/<id>/master.m3u8"
         r'''(?:data-src|data-url|data-playlist|data-video|data-source|src|href)\s*=\s*["']([^"']*\.m3u8[^"']*)["']''',
         r'''["']((?:\.{0,2}/|/)[^"'\s>]*\.m3u8(?:[^"'\s>]*)?)["']''',
     ]
     found = []
     for pat in patterns:
-        for match in re.findall(pat, html, re.IGNORECASE):
+        for match in re.findall(pat, text, re.IGNORECASE):
             candidate = match if isinstance(match, str) else match[0]
-            candidate = candidate.replace("\\/", "/").strip()
+            candidate = candidate.replace("\\/", "/").strip().rstrip("\\").rstrip(",")
             if candidate.startswith("//"):
                 candidate = "https:" + candidate
             elif not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", candidate):
@@ -508,18 +530,25 @@ def extract_m3u8_from_html(html: str, base_url: Optional[str] = None):
                 if not base_url:
                     continue
                 candidate = urljoin(base_url, candidate)
-            found.append(candidate)
+            if _is_clean_stream_url(candidate):
+                found.append(candidate)
 
-    for raw_cfg in re.findall(r"data-config='([^']+)'", html, re.IGNORECASE):
+    for raw_cfg in re.findall(r"data-config='([^']+)'", text, re.IGNORECASE):
         try:
             cfg = json.loads(raw_cfg)
             video = cfg.get("video") or {}
             candidate = video.get("url")
-            if isinstance(candidate, str) and ".m3u8" in candidate:
-                found.append(candidate)
+            if isinstance(candidate, str):
+                candidate = candidate.replace("\\/", "/")
+                if _is_clean_stream_url(candidate):
+                    found.append(candidate)
         except Exception:
             pass
-    return dedupe_keep_order(found)
+
+    # 干净的短地址优先（旧贪心匹配会产出超长垃圾串）
+    unique = dedupe_keep_order(found)
+    unique.sort(key=lambda u: (len(u), u.count("/")))
+    return unique
 
 
 def fetch_webpage_html(url: str, referer: Optional[str] = None, user_agent: Optional[str] = None, proxy: Optional[str] = None) -> str:
@@ -1975,6 +2004,9 @@ def ffmpeg_download(
     should_cancel=None,
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # 防御：播放地址必须干净，否则 ffmpeg 只会报 "Invalid data found"
+    if not stream_url or not re.match(r"^https?://", stream_url) or _STREAM_BAD_CHARS.search(stream_url):
+        raise RuntimeError(f"播放地址非法（疑似把页面 JSON 当成 m3u8）：{str(stream_url)[:80]}")
     effective_referer = referer
     # Auto-set Referer for platforms that require it
     if 'xchina' in (stream_url or '').lower():
