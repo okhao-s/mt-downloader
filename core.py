@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -13,6 +14,11 @@ from typing import Optional
 from urllib.parse import quote, urljoin, urlparse, urlsplit
 
 import requests
+
+try:  # pycryptodome 在 requirements 里，容器内一定有；缺了就明确回退 ffmpeg
+    from Crypto.Cipher import AES as _AES_CIPHER
+except Exception:  # pragma: no cover
+    _AES_CIPHER = None
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -1236,7 +1242,14 @@ def download_with_ytdlp(
             "--ignore-config",
             "--newline",
             "--progress",
-            "--no-part",
+            "--continue",
+            "--no-playlist",
+            "--concurrent-fragments",
+            "4",
+            "--retries",
+            "10",
+            "--fragment-retries",
+            "10",
             "--restrict-filenames",
             "--socket-timeout",
             str(YTDLP_SOCKET_TIMEOUT),
@@ -1244,7 +1257,8 @@ def download_with_ytdlp(
             str(ytdlp_output),
         ]
         if force_mp4:
-            cmd += ["--merge-output-format", "mp4", "--recode-video", "mp4"]
+            # remux 只换容器不重编码；recode 会把整条视频重新压一遍
+            cmd += ["--merge-output-format", "mp4", "--remux-video", "mp4"]
         # Auto-set Referer for xchina if not provided
         effective_referer = referer
         if 'xchina' in (url or '').lower():
@@ -2180,6 +2194,7 @@ def ffmpeg_download(
         "-progress", "pipe:1",
         "-i", stream_url,
         "-c", "copy",
+        "-max_muxing_queue_size", "1024",
         "-bsf:a", "aac_adtstoasc",
         "-movflags", "+faststart",
         str(output_path),
@@ -2264,31 +2279,133 @@ def ffmpeg_download(
             detail = f"ffmpeg exited with code {returncode}"
         raise RuntimeError(detail[-4000:])
 
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise RuntimeError("ffmpeg 返回成功但输出文件为空")
+
+
+def _manifest_lines(text: str) -> list[str]:
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def _pick_variant(manifest_text: str, manifest_url: str) -> Optional[str]:
+    """从 master playlist 里挑码率最高的 variant；没有变体就返回 None。"""
+    lines = _manifest_lines(manifest_text)
+    best = None  # (bandwidth, resolution_pixels, uri)
+    pending = None
+    for line in lines:
+        if line.startswith("#EXT-X-STREAM-INF"):
+            bw = re.search(r"BANDWIDTH=(\d+)", line)
+            res = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
+            bandwidth = int(bw.group(1)) if bw else 0
+            pixels = int(res.group(1)) * int(res.group(2)) if res else 0
+            pending = (bandwidth, pixels)
+            continue
+        if line.startswith("#"):
+            continue
+        if pending is not None:
+            uri = urljoin(manifest_url, line)
+            score = (pending[0], pending[1])
+            if best is None or score > best[0]:
+                best = (score, uri)
+            pending = None
+    return best[1] if best else None
+
+
+def resolve_media_playlist(text: str, manifest_url: str, fetch=None) -> tuple[str, str]:
+    """master playlist → 选最高码率 variant 并取回；普通媒体列表原样返回。
+
+    旧实现不认 master，把 variant 地址当成"非标准分片"直接回退 ffmpeg，
+    导致绝大多数 m3u8 站点（xchina 的 master.m3u8 就是这种）实际走的是慢速兼容下载。
+    """
+    lines = _manifest_lines(text)
+    if not any(line.startswith("#EXT-X-STREAM-INF") for line in lines):
+        return text, manifest_url
+    # 分离音轨的 master（#EXT-X-MEDIA TYPE=AUDIO）合并需要 mux 两路，交给 ffmpeg
+    if any(line.startswith("#EXT-X-MEDIA") and "TYPE=AUDIO" in line.upper().replace(" ", "") for line in lines):
+        raise RuntimeError("master 使用分离音轨，回退 ffmpeg")
+    variant_url = _pick_variant(text, manifest_url)
+    if not variant_url:
+        raise RuntimeError("master playlist 里没有找到 variant")
+    if fetch is None:
+        raise RuntimeError("缺少 fetch 回调，无法解析 master")
+    return fetch(variant_url), variant_url
+
 
 def parse_simple_hls_manifest(manifest_text: str, manifest_url: str) -> dict:
-    lines = [line.strip() for line in manifest_text.splitlines() if line.strip()]
+    lines = _manifest_lines(manifest_text)
     if not lines or lines[0] != "#EXTM3U":
         raise RuntimeError("不是合法的 HLS manifest")
 
-    unsupported_tags = ("#EXT-X-KEY", "#EXT-X-MAP", "#EXT-X-BYTERANGE")
+    init_url = None
+    key_info = None
     for line in lines:
-        if line.startswith(unsupported_tags):
-            raise RuntimeError("复杂/加密 HLS，回退 ffmpeg")
+        if line.startswith("#EXT-X-KEY"):
+            method_match = re.search(r"METHOD=([A-Za-z0-9-]+)", line)
+            method = (method_match.group(1) if method_match else "").upper()
+            if method in ("", "NONE"):
+                continue
+            if method != "AES-128":
+                raise RuntimeError(f"HLS 加密方式 {method} 不支持，回退 ffmpeg")
+            uri_match = re.search(r'URI="([^"]+)"', line)
+            iv_match = re.search(r"IV=0x([0-9A-Fa-f]+)", line)
+            if _AES_CIPHER is None:
+                raise RuntimeError("缺少 pycryptodome，AES-128 加密流回退 ffmpeg")
+            key_info = {
+                "uri": urljoin(manifest_url, uri_match.group(1)) if uri_match else None,
+                "iv": bytes.fromhex(iv_match.group(1)) if iv_match else None,
+            }
+        if line.startswith("#EXT-X-BYTERANGE"):
+            raise RuntimeError("BYTERANGE HLS，回退 ffmpeg")
+        if line.startswith("#EXT-X-MAP"):
+            uri_match = re.search(r'URI="([^"]+)"', line)
+            if uri_match:
+                # fMP4 的初始化段：#EXT-X-MAP URI="init.mp4"，必须放在 concat 列表最前面
+                init_url = urljoin(manifest_url, uri_match.group(1))
 
     segments = []
+    extensions = set()
     for line in lines:
         if line.startswith("#"):
             continue
         segment_url = urljoin(manifest_url, line)
         path = urlparse(segment_url).path.lower()
-        if not (path.endswith(".ts") or path.endswith(".m4s") or path.endswith(".jpeg") or path.endswith(".jpg")):
-            raise RuntimeError("非标准分片格式，回退 ffmpeg")
+        ext = os.path.splitext(path)[1]
+        if ext not in {".ts", ".m4s", ".m4v", ".mp4", ".aac", ".jpeg", ".jpg"}:
+            raise RuntimeError(f"非标准分片格式（{ext or '无扩展名'}），回退 ffmpeg")
+        extensions.add(ext)
         segments.append(segment_url)
 
     if not segments:
         raise RuntimeError("manifest 中没有可下载分片")
 
-    return {"segments": segments}
+    return {
+        "segments": segments,
+        "init": init_url,
+        "is_fmp4": bool(init_url) or ".m4s" in extensions,
+        "ext": sorted(extensions)[0] if extensions else ".ts",
+        "key": key_info,
+    }
+
+
+def _escape_concat_path(path: Path) -> str:
+    """ffmpeg concat 列表用单引号包裹，路径里的单引号必须转义，否则整条命令失效。"""
+    return path.as_posix().replace("'", "'\\''")
+
+
+def _decrypt_aes128(payload: bytes, key: bytes, iv: bytes) -> bytes:
+    """HLS AES-128-CBC 分片解密（key 通常 16 字节，IV 缺失时用分片序号）。"""
+    if _AES_CIPHER is None:
+        raise RuntimeError("缺少 pycryptodome，无法解密 AES-128 分片")
+    if not payload:
+        return payload
+    if len(payload) % 16:
+        raise RuntimeError("AES 分片长度不是 16 的整数倍")
+    data = _AES_CIPHER.new(key, _AES_CIPHER.MODE_CBC, iv[:16].rjust(16, b"\x00")).decrypt(payload)
+    # 去掉 PKCS7 填充（末尾无效的 ts 垃圾会让 ffmpeg 报错）
+    pad = data[-1] if data else 0
+    if 1 <= pad <= 16 and data.endswith(bytes([pad]) * pad):
+        data = data[:-pad]
+    return data
 
 
 def aggressive_hls_download(
@@ -2305,19 +2422,42 @@ def aggressive_hls_download(
     # Auto-set Referer for platforms that require it
     if 'xchina' in (manifest_url or '').lower():
         effective_referer = effective_referer or 'https://www.xchina.co/'
-    manifest_resp = requests.get(
-        manifest_url,
-        headers=build_headers(effective_referer, user_agent),
-        proxies=build_proxies(proxy),
-        timeout=30,
-    )
-    manifest_resp.raise_for_status()
-    parsed = parse_simple_hls_manifest(manifest_resp.text, manifest_url)
+
+    session = requests.Session()
+    session.headers.update(build_headers(effective_referer, user_agent))
+    session.proxies.update(build_proxies(proxy) or {})
+
+    def fetch_text(url: str) -> str:
+        resp = session.get(url, timeout=(15, 60))
+        resp.raise_for_status()
+        return resp.text
+
+    manifest_text = fetch_text(manifest_url)
+    # master playlist → 选最高码率 variant 再解析。
+    # 旧实现不认 master，会把 variant 地址当“非标准分片”直接回退 ffmpeg。
+    manifest_text, media_url = resolve_media_playlist(manifest_text, manifest_url, fetch=fetch_text)
+    parsed = parse_simple_hls_manifest(manifest_text, media_url)
     segments = parsed["segments"]
-    total_segments = len(segments)
+    init_url = parsed.get("init")
+    is_fmp4 = bool(parsed.get("is_fmp4"))
+    key_info = parsed.get("key") or None
+    total_segments = len(segments) + (1 if init_url else 0)
+
+    aes_key = None
+    if key_info and key_info.get("uri"):
+        # AES-128 的 key 就在 manifest 同源上，走同一个 session 取（带 Referer/代理）
+        key_resp = session.get(key_info["uri"], timeout=(15, 30))
+        key_resp.raise_for_status()
+        aes_key = key_resp.content
+        if len(aes_key) not in (16, 24, 32):
+            raise RuntimeError(f"AES key 长度异常（{len(aes_key)} 字节），回退 ffmpeg")
+        logger.info("[aggressive] HLS 使用 AES-128 加密，分片将本地解密")
 
     if segment_workers is None:
-        if total_segments >= 500:
+        env_workers = os.getenv("AGGRESSIVE_SEGMENT_WORKERS", "").strip()
+        if env_workers.isdigit() and int(env_workers) > 0:
+            segment_workers = int(env_workers)
+        elif total_segments >= 500:
             segment_workers = 16
         elif total_segments >= 240:
             segment_workers = 12
@@ -2329,86 +2469,168 @@ def aggressive_hls_download(
     tmp_dir = output_path.parent / f".{output_path.stem}.parts"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    downloaded = 0
-    downloaded_bytes = 0
+    def part_name(index: int, url: str) -> str:
+        ext = os.path.splitext(urlparse(url).path)[1].lower() or (".m4s" if is_fmp4 else ".ts")
+        if ext not in {".ts", ".m4s", ".m4v", ".mp4", ".aac", ".jpg", ".jpeg"}:
+            ext = ".m4s" if is_fmp4 else ".ts"
+        return f"{index:06d}{ext}"
+
+    init_path = tmp_dir / part_name(0, init_url) if init_url else None
+
+    # 断点续传：上次失败留下的分片直接复用（写入是原子的，存在即完整）
+    existing = {}
+    for path in tmp_dir.iterdir():
+        if path.is_file() and not path.name.endswith(".tmp") and path.name != "concat.txt" and path.stat().st_size > 0:
+            existing[path.name] = path.stat().st_size
+    resumed_files = len(existing)
+    resumed_bytes = sum(existing.values())
+    if resumed_files:
+        logger.info(f"[aggressive] 复用 {resumed_files} 个已下载分片（{resumed_bytes / 1024 / 1024:.1f}MB）")
+
+    downloaded = resumed_files
+    downloaded_bytes = resumed_bytes
     start_time = time.time()
-    session = requests.Session()
-    session.headers.update(build_headers(effective_referer, user_agent))
-    session.proxies.update(build_proxies(proxy) or {})
+    success = False
+    cancelled = False
 
-    def fetch_one(index_url):
-        index, seg_url = index_url
-        # 总超时检查（每个分片下载前）
-        elapsed = time.time() - start_time
-        if elapsed > AGGRESSIVE_HLS_TIMEOUT:
-            raise RuntimeError(f"激进模式总超时（>{AGGRESSIVE_HLS_TIMEOUT}s），已下载 {downloaded}/{total_segments} 分片")
-        last_error = None
-        for attempt in range(1, 4):
-            try:
-                seg_resp = session.get(seg_url, timeout=45)
-                seg_resp.raise_for_status()
-                seg_path = tmp_dir / f"{index:06d}.ts"
-                seg_path.write_bytes(seg_resp.content)
-                return index, seg_path, len(seg_resp.content), attempt
-            except Exception as exc:
-                last_error = exc
-                # 重试前再次检查总超时
-                if time.time() - start_time > AGGRESSIVE_HLS_TIMEOUT:
-                    raise RuntimeError(f"激进模式总超时（>{AGGRESSIVE_HLS_TIMEOUT}s），已下载 {downloaded}/{total_segments} 分片")
-                time.sleep(min(1.5 * attempt, 4))
-        raise RuntimeError(f"分片 {index + 1} 重试 3 次仍失败: {last_error}")
-
-    try:
-        with ThreadPoolExecutor(max_workers=segment_workers, thread_name_prefix="mt-seg") as executor:
-            futures = [executor.submit(fetch_one, item) for item in enumerate(segments)]
-            for future in as_completed(futures):
-                if should_cancel and should_cancel():
-                    raise RuntimeError("下载已取消")
-                _index, _seg_path, size, attempt = future.result()
-                downloaded += 1
-                downloaded_bytes += size
-                if progress_callback:
-                    elapsed = max(0.1, time.time() - start_time)
-                    speed_mb = downloaded_bytes / 1024 / 1024 / elapsed
-                    progress = max(8, min(95, int(downloaded / total_segments * 95)))
-                    retry_note = f" · 重试 {attempt - 1} 次成功" if attempt > 1 else ""
-                    progress_callback(progress, f"激进模式下载中… 并发 {segment_workers} · 分片 {downloaded}/{total_segments} · 已下载 {downloaded_bytes / 1024 / 1024:.1f}MB · 速度 {speed_mb:.2f} MB/s{retry_note}")
-
-        # 合并前再次检查总超时
+    def fetch_one(item):
+        index, seg_url = item
+        target = tmp_dir / part_name(index, seg_url)
+        if target.name in existing:
+            return index, target, existing[target.name], 0, True
         if time.time() - start_time > AGGRESSIVE_HLS_TIMEOUT:
             raise RuntimeError(f"激进模式总超时（>{AGGRESSIVE_HLS_TIMEOUT}s），已下载 {downloaded}/{total_segments} 分片")
+        last_error = None
+        for attempt in range(1, 6):
+            try:
+                seg_resp = session.get(seg_url, timeout=(15, 60))
+                seg_resp.raise_for_status()
+                payload = seg_resp.content
+                expected = seg_resp.headers.get("content-length")
+                if expected and expected.isdigit() and len(payload) != int(expected):
+                    raise RuntimeError(f"分片长度不符（{len(payload)}/{expected}）")
+                if not payload:
+                    raise RuntimeError("分片内容为空")
+                if aes_key:
+                    # 先按密文校验长度，再解密（解密后因去填充会短一些）
+                    iv = key_info.get("iv") or index.to_bytes(16, "big")
+                    payload = _decrypt_aes128(payload, aes_key, iv)
+                # 原子写：先写 .tmp 再改名，进程被杀不会留下半截分片
+                tmp_path = target.with_suffix(target.suffix + ".tmp")
+                tmp_path.write_bytes(payload)
+                os.replace(tmp_path, target)
+                return index, target, len(payload), attempt, False
+            except Exception as exc:
+                last_error = exc
+                if time.time() - start_time > AGGRESSIVE_HLS_TIMEOUT:
+                    raise RuntimeError(f"激进模式总超时（>{AGGRESSIVE_HLS_TIMEOUT}s），已下载 {downloaded}/{total_segments} 分片")
+                time.sleep(min(2 ** (attempt - 1), 8))
+        raise RuntimeError(f"分片 {index} 重试 5 次仍失败: {last_error}")
 
-        concat_file = tmp_dir / "concat.txt"
-        concat_file.write_text("".join([f"file '{(tmp_dir / f'{i:06d}.ts').as_posix()}'\n" for i in range(total_segments)]), encoding="utf-8")
+    try:
+        pending = [(index + 1, url) for index, url in enumerate(segments)]
+        if init_url and init_path is not None and init_path.name not in existing:
+            pending.insert(0, (0, init_url))
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-c", "copy",
-            "-bsf:a", "aac_adtstoasc",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or f"ffmpeg concat failed: {result.returncode}").strip()
-            raise RuntimeError(detail[-4000:])
+        with ThreadPoolExecutor(max_workers=segment_workers, thread_name_prefix="mt-seg") as executor:
+            futures = [executor.submit(fetch_one, item) for item in pending]
+            for future in as_completed(futures):
+                if should_cancel and should_cancel():
+                    cancelled = True
+                    raise RuntimeError("下载已取消")
+                _index, _seg_path, size, attempt, skipped = future.result()
+                if not skipped:
+                    downloaded += 1
+                    downloaded_bytes += size
+                if progress_callback:
+                    elapsed = max(0.1, time.time() - start_time)
+                    fresh_bytes = max(0, downloaded_bytes - resumed_bytes)
+                    progress = max(8, min(95, int(downloaded / max(1, total_segments) * 95)))
+                    notes = []
+                    if resumed_files:
+                        notes.append(f"续传 {resumed_files}")
+                    if attempt > 1:
+                        notes.append(f"重试 {attempt - 1} 次成功")
+                    note = (" · " + " · ".join(notes)) if notes else ""
+                    progress_callback(
+                        progress,
+                        f"激进模式下载中… 并发 {segment_workers} · 分片 {downloaded}/{total_segments} · "
+                        f"已下载 {downloaded_bytes / 1024 / 1024:.1f}MB · 速度 {fresh_bytes / 1024 / 1024 / elapsed:.2f} MB/s{note}",
+                    )
+
+        ordered: list[Path] = []
+        if init_path is not None:
+            if not init_path.exists() or init_path.stat().st_size == 0:
+                raise RuntimeError("fMP4 初始化段缺失")
+            ordered.append(init_path)
+        for index, url in enumerate(segments, start=1):
+            path = tmp_dir / part_name(index, url)
+            if not path.exists() or path.stat().st_size == 0:
+                raise RuntimeError(f"分片 {index} 缺失，无法合并")
+            ordered.append(path)
+
+        total_bytes = sum(p.stat().st_size for p in ordered)
+
+        if is_fmp4:
+            # fMP4 的 .m4s 分片单独没有 moov/tfhd，ffmpeg concat 解不开（会产出几百字节的空文件）。
+            # 正确做法是字节级拼接：init.mp4 + 各分片 = 一个合法的 fragmented MP4。
+            with output_path.open("wb") as out_file:
+                for part in ordered:
+                    with part.open("rb") as fh:
+                        shutil.copyfileobj(fh, out_file, 1024 * 1024)
+        else:
+            concat_file = tmp_dir / "concat.txt"
+            concat_file.write_text(
+                "".join(f"file '{_escape_concat_path(p)}'\n" for p in ordered), encoding="utf-8"
+            )
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy"]
+            cmd += ["-bsf:a", "aac_adtstoasc"]
+            cmd += [
+                "-fflags", "+genpts",
+                "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
+            # 合并是纯拷贝，按吞吐给超时（30MB/s），别让大文件撞死线
+            concat_timeout = max(300, int(total_bytes / (30 * 1024 * 1024)) + 120)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=concat_timeout)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or f"ffmpeg concat failed: {result.returncode}").strip()
+                raise RuntimeError(detail[-4000:])
+
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise RuntimeError("合并完成但输出文件为空")
+
+        # 产物自检：能解析出时长才算成功（fMP4 concat 出错时 ffmpeg 会返回 0 但只写几百字节）
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(output_path)],
+            capture_output=True, text=True, timeout=60,
+        )
+        try:
+            duration = float((probe.stdout or "").strip() or 0)
+        except ValueError:
+            duration = 0.0
+        if duration <= 0:
+            raise RuntimeError(f"合并产物无法解析（{output_path.stat().st_size} 字节）：{(probe.stderr or '').strip()[:300]}")
+
+        success = True
         if progress_callback:
             progress_callback(99, "激进模式收尾封装…")
     finally:
         session.close()
-        for part in tmp_dir.glob("*"):
+        # 失败时保留分片以便下次续传；成功或取消才清理
+        if success or cancelled:
+            for part in tmp_dir.glob("*"):
+                try:
+                    part.unlink()
+                except Exception:
+                    pass
             try:
-                part.unlink()
+                tmp_dir.rmdir()
             except Exception:
                 pass
-        try:
-            tmp_dir.rmdir()
-        except Exception:
-            pass
-
+        elif tmp_dir.exists():
+            logger.info(f"[aggressive] 下载中断，保留分片目录以便续传：{tmp_dir}")
 
 def normalize_filename(name: str, max_bytes: int = 150) -> str:
     """

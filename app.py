@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -1732,11 +1733,15 @@ def delete_job(job_id: str):
     deleted_file = False
     output_name = job.get("output") or ""
     target_dir = Path(str(job.get("download_dir") or DOWNLOAD_DIR))
-    if output_name:
+    if output_name and not output_name.startswith("__"):
         output_path = target_dir / output_name
         if output_path.exists() and output_path.is_file():
             output_path.unlink(missing_ok=True)
             deleted_file = True
+        # 失败任务会保留 .parts 目录以便续传；用户删任务时一并清掉，避免磁盘堆积
+        parts_dir = target_dir / f".{output_path.stem}.parts"
+        if parts_dir.is_dir():
+            shutil.rmtree(parts_dir, ignore_errors=True)
 
     return {"ok": True, "job_id": job_id, "deleted_file": deleted_file, "output": output_name}
 
