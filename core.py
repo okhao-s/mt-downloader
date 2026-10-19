@@ -534,6 +534,13 @@ DEFAULT_SITE_NAME_SUFFIXES = [
     "糖心vlog", "海角社区", "黑料网", "91porn", "91自拍", "吃瓜网",
 ]
 
+# 标题尾巴上的「状态词」，不是标题内容（UAA 等站写成「标题 - 在线观看 | UAA视频」）
+DEFAULT_TITLE_NOISE_SUFFIXES = [
+    "高清在线观看", "免费在线观看", "手机在线观看", "在线观看免费",
+    "视频在线观看", "在线观看", "在线播放", "免费播放", "高清播放",
+    "高清完整版", "完整版", "在线看",
+]
+
 
 def site_name_suffixes() -> list[str]:
     """站点品牌词列表：config.site_name_suffixes 可覆盖（列表或逗号分隔字符串）。"""
@@ -565,11 +572,11 @@ def _site_suffix_patterns(names: list[str]) -> list[re.Pattern]:
 
 
 def strip_site_name_suffixes(title: Optional[str], names: Optional[list[str]] = None) -> Optional[str]:
-    """去掉标题尾部站点品牌段（「- 小黄书 xChina」「| 51吃瓜网」等），只削尾部，不碰正文。"""
+    """去掉标题尾部站点品牌段（「- 小黄书 xChina」「| 51吃瓜网」）和状态词（「- 在线观看」），只削尾部。"""
     text = str(title or "").strip()
     if not text:
         return title
-    patterns = _site_suffix_patterns(names or site_name_suffixes())
+    patterns = _site_suffix_patterns(names or site_name_suffixes()) + _site_suffix_patterns(DEFAULT_TITLE_NOISE_SUFFIXES)
     for _ in range(8):
         before = text
         for pattern in patterns:
