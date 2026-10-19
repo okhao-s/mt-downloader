@@ -45,6 +45,7 @@ from core import (
     rewrite_m3u8_manifest,
     save_config,
     should_hint_bilibili_cookies,
+    strip_site_name_suffixes,
 )
 from wecom import WeComClient, WeComCrypto, build_passive_text_reply, is_wecom_send_ready, is_wecom_callback_ready
 
@@ -1485,6 +1486,7 @@ def create_download_job(payload: DownloadPayload, retry_of: str | None = None):
         info["title"] = author
 
     suggested_name = payload.output or info.get("title") or (f"{platform}-image-{uuid4().hex[:8]}" if media_type == "image" else f"video-{uuid4().hex[:8]}")
+    suggested_name = strip_site_name_suffixes(suggested_name) or suggested_name
     output_candidate = build_image_output_name(suggested_name, 0, len(image_urls), image_urls[0]) if media_type == "image" else build_video_output_name(suggested_name, payload.media_index, len(media_entries) or 1)
     output_name = allocate_output_name(output_candidate, download_dir=download_dir)
     output_path = download_dir / output_name

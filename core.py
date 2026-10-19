@@ -468,20 +468,130 @@ def extract_title_from_html(html: str) -> Optional[str]:
 
 
 def extract_xchina_author(html: str) -> Optional[str]:
-    # 从 xchina 视频页面提取作者名（模特）
-    # 优先匹配 <a class="model-item">作者</a>
+    # 从 xchina 视频页面提取作者名（模特/女优）
+    # 新版 xchina.co 页面结构：JSON-LD "actor":[{"@type":"Person","name":"..."}] 最可靠
+    for block in re.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.IGNORECASE | re.DOTALL):
+        try:
+            data = json.loads(block.strip())
+        except Exception:
+            continue
+        for item in (data if isinstance(data, list) else [data]):
+            if not isinstance(item, dict):
+                continue
+            actors = item.get("actor") or item.get("actors")
+            if isinstance(actors, dict):
+                actors = [actors]
+            if isinstance(actors, list):
+                for actor in actors:
+                    if isinstance(actor, dict):
+                        name = str(actor.get("name") or "").strip()
+                        if name:
+                            return name
+                    elif isinstance(actor, str) and actor.strip():
+                        return actor.strip()
+
+    # 页面作者链接：<a href="/video-person/223">…半碗奶盖</a>
+    m = re.search(
+        r'<a[^>]*href=["\']/video-person/[^"\']*["\'][^>]*>(.*?)</a>',
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        author = unescape(re.sub(r"<[^>]+>", " ", m.group(1)))
+        author = re.sub(r"\s+", " ", author).strip()
+        if author and not _looks_like_site_brand(author):
+            return author
+
+    # 旧版页面：<a class="model-item">作者</a> / <div class="model-item">作者</div>
     m = re.search(r'<a[^>]*class=["\'][^"\']*model-item[^"\']*["\'][^>]*>([^<]+)</a>', html, re.IGNORECASE)
     if m:
         author = m.group(1).strip()
         if author:
             return author
-    # 后备：匹配 <div class="model-item">作者</div>
     m = re.search(r'<div class="model-item"[^>]*>([^<]+)</div>', html, re.IGNORECASE)
     if m:
         author = m.group(1).strip()
         if author:
             return author
+
+    # 最后兜底：meta description 形如「标题，系列，作者，时长 33:09，2026-10-19 发布」
+    for meta in re.findall(r'<meta\b[^>]*(?:name|property)=["\'](?:description|og:description)["\'][^>]*>', html, re.IGNORECASE):
+        content = re.search(r'content=["\'](.*?)["\']', meta, re.IGNORECASE | re.DOTALL)
+        if not content:
+            continue
+        text = unescape(content.group(1))
+        m = re.search(r'[，,]\s*([^，,]{1,40})\s*[，,]\s*时长', text)
+        if m:
+            author = m.group(1).strip()
+            if author and not _looks_like_site_brand(author):
+                return author
     return None
+
+
+# 下载文件名里不该残留的站点品牌词（按长度倒序匹配，避免短词先吃掉长词）
+DEFAULT_SITE_NAME_SUFFIXES = [
+    "小黄书", "xchina", "51吃瓜网", "51吃瓜", "uaa视频", "有爱爱",
+    "糖心vlog", "海角社区", "黑料网", "91porn", "91自拍", "吃瓜网",
+]
+
+
+def site_name_suffixes() -> list[str]:
+    """站点品牌词列表：config.site_name_suffixes 可覆盖（列表或逗号分隔字符串）。"""
+    try:
+        raw = load_config().get("site_name_suffixes")
+    except Exception:
+        raw = None
+    if isinstance(raw, str):
+        names = [part.strip() for part in re.split(r"[,，\s]+", raw) if part.strip()]
+    elif isinstance(raw, (list, tuple)):
+        names = [str(part).strip() for part in raw if str(part).strip()]
+    else:
+        names = []
+    return names or DEFAULT_SITE_NAME_SUFFIXES
+
+
+def _site_suffix_patterns(names: list[str]) -> list[re.Pattern]:
+    tokens = sorted({n for n in names if n}, key=len, reverse=True)
+    if not tokens:
+        return []
+    brand = "|".join(re.escape(token) for token in tokens)
+    # 允许一个尾段里连写多个品牌词，如「- 小黄书 xChina」
+    tail = rf"(?:{brand})(?:\s+(?:{brand}))*"
+    return [
+        re.compile(rf"\s*[-–—|｜:：]\s*{tail}\s*$", re.IGNORECASE),
+        re.compile(rf"\s*[（(]\s*{tail}\s*[)）]\s*$", re.IGNORECASE),
+        re.compile(rf"\s*{tail}\s*$", re.IGNORECASE),
+    ]
+
+
+def strip_site_name_suffixes(title: Optional[str], names: Optional[list[str]] = None) -> Optional[str]:
+    """去掉标题尾部站点品牌段（「- 小黄书 xChina」「| 51吃瓜网」等），只削尾部，不碰正文。"""
+    text = str(title or "").strip()
+    if not text:
+        return title
+    patterns = _site_suffix_patterns(names or site_name_suffixes())
+    for _ in range(8):
+        before = text
+        for pattern in patterns:
+            stripped = pattern.sub("", text)
+            stripped = stripped.strip(" \t\r\n-–—|｜:：_")
+            # 全被削空说明整条标题就是站点名，保留原文
+            if stripped and stripped != text:
+                text = stripped
+        if text == before:
+            break
+    return text
+
+
+def _looks_like_site_brand(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(value or "")).lower()
+    if not normalized:
+        return True
+    for name in site_name_suffixes():
+        key = re.sub(r"\s+", "", name).lower()
+        if key and normalized == key:
+            return True
+    return False
 
 
 _STREAM_BAD_CHARS = re.compile(r"""[\s"'\\<>{},]""")
@@ -1946,6 +2056,9 @@ def _discover_stream_uncached(
         info["media_type"] = "image"
     else:
         info["media_type"] = "video"
+
+    # 文件名/标题里去掉站点品牌尾巴（「- 小黄书 xChina」等）
+    info["title"] = strip_site_name_suffixes(info.get("title"))
 
     return info
 
