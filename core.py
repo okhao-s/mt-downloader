@@ -532,6 +532,13 @@ def extract_xchina_author(html: str) -> Optional[str]:
 DEFAULT_SITE_NAME_SUFFIXES = [
     "小黄书", "xchina", "51吃瓜网", "51吃瓜", "uaa视频", "有爱爱",
     "糖心vlog", "海角社区", "黑料网", "91porn", "91自拍", "吃瓜网",
+    "香蕉视频", "香蕉tv", "麻豆视频", "javbus", "javdb", "missav",
+]
+
+# 番号：XJX-0615 / ABF380 / HEYZO-2706 这类，标题尾部的「（番号）」不是标题内容
+CODE_TOKEN_RE = re.compile(r"^[A-Za-z]{2,8}[-_ ]?\d{2,7}(?:[-_][A-Za-z]{1,3})?$")
+CODE_BRACKET_PATTERNS = [
+    re.compile(r"\s*[（(\[【［]\s*([^（()）\[\]【】［］]{3,24})\s*[)）\]】］]\s*$"),
 ]
 
 # 标题尾巴上的「状态词」，不是标题内容（UAA 等站写成「标题 - 在线观看 | UAA视频」）
@@ -584,6 +591,23 @@ def strip_site_name_suffixes(title: Optional[str], names: Optional[list[str]] = 
             stripped = stripped.strip(" \t\r\n-–—|｜:：_")
             # 全被削空说明整条标题就是站点名，保留原文
             if stripped and stripped != text:
+                text = stripped
+        if text == before:
+            break
+
+    # 尾部番号：「（XJX-0615）」「［ABF-380］」「 - HEYZO-2706」
+    for _ in range(4):
+        before = text
+        for pattern in CODE_BRACKET_PATTERNS:
+            match = pattern.search(text)
+            if match and CODE_TOKEN_RE.match(match.group(1).strip()):
+                stripped = text[: match.start()].strip(" \t\r\n-–—|｜:：_")
+                if stripped:
+                    text = stripped
+        match = re.search(r"\s*[-–—|｜]\s*([A-Za-z]{2,8}[-_ ]?\d{2,7}(?:[-_][A-Za-z]{1,3})?)\s*$", text)
+        if match and CODE_TOKEN_RE.match(match.group(1)):
+            stripped = text[: match.start()].strip(" \t\r\n-–—|｜:：_")
+            if stripped:
                 text = stripped
         if text == before:
             break
